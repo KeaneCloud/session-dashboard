@@ -1,0 +1,9 @@
+{
+  "name": "session-dashboard",
+  "version": "0.1.0",
+  "description": "Sessions pane: every open session with a status light, step progress and time, plus 5-hour and weekly usage",
+  "author": {
+    "name": "KeaneCloud"
+  },
+  "license": "MIT"
+}
