@@ -5,11 +5,11 @@ import { setLang } from '../hooks/i18n.js'
 // English is the default UI language; set it explicitly so the suite does not depend on test order
 setLang('en')
 import {
-  ago, bar, currentStepLabel, desktopRecordMatches, estimateRemainingMin, etaText, folderName, formatElapsed,
+  isProjectSession, ago, bar, currentStepLabel, desktopRecordMatches, estimateRemainingMin, etaText, folderName, formatElapsed,
   jumpUrl, limitColor, liveSessions, mergeProgress, othersRows, parseTaskSteps, pushAction, relativeReset, rightTime,
   safeText, actionLabel, showActivity, splitHidden, statusOf, stepStats, summarizeBackground, svgOtherLine,
   svgSectionDivider, svgThinBar, svgTimelineNode, tasksPath, thinBar, titleFromTranscript, usageRows, usageSegments,
-  fitSteps, ROWS, timelineItems, svgSessionGap, cleanTitle, nameUnits, LIGHT, wrapByWidth,
+  fitSteps, ROWS, timelineItems, svgSessionGap, cleanTitle, nameUnits, LIGHT, wrapByWidth, cleanStepText, touchesChecklist, nodeHeight,
 } from '../hooks/lib.js'
 
 const local = (y: number, mo: number, d: number, h: number, mi: number) => new Date(y, mo - 1, d, h, mi).getTime()
@@ -201,4 +201,39 @@ test('wrapByWidth: wraps by display width (a CJK character takes 2 cells) and dr
   expect(wrapByWidth('abc', 10)).toEqual(['abc'])
   expect(wrapByWidth('面板間距調整設定', 8)).toEqual(['面板間距', '調整設定'])
   expect(wrapByWidth('Dashboard 間距調整', 10).join('')).toBe('Dashboard 間距調整')
+})
+
+test('cleanStepText: drops URLs (with their brackets) and backticks from checklist items', () => {
+  expect(cleanStepText('Install the DevTools MCP（https://github.com/example/devtools-mcp）')).toBe('Install the DevTools MCP')
+  expect(cleanStepText('Read the docs (https://example.com/docs) first')).toBe('Read the docs first')
+  expect(cleanStepText('Sandbox broken: `helper_unknown_error: setup had errors`')).toBe('Sandbox broken: helper_unknown_error: setup had errors')
+  expect(cleanStepText('See https://example.com/a/b for details')).toBe('See for details')
+  expect(parseTaskSteps('- [ ] Install `tool`（https://example.com/x）\n')).toEqual([{ title: 'Install tool', status: 'running' }])
+})
+
+test('wrapByWidth: breaks at a space when it can, so English words stay whole', () => {
+  const lines = wrapByWidth('Supabase and Chrome DevTools', 12)
+  expect(lines).toEqual(['Supabase and ', 'Chrome ', 'DevTools'])
+  expect(lines.join('')).toBe('Supabase and Chrome DevTools')
+  expect(wrapByWidth('Supercalifragilistic', 8)).toEqual(['Supercal', 'ifragili', 'stic']) // a word longer than the line still has to split
+})
+
+test('touchesChecklist: only writes to checklist.md / TASKS.md count, reads do not', () => {
+  expect(touchesChecklist({ tool: 'Edit', file_path: 'C:\\work\\checklist.md' })).toBe(true)
+  expect(touchesChecklist({ tool: 'Write', file_path: '/home/u/proj/TASKS.md' })).toBe(true)
+  expect(touchesChecklist({ tool: 'Edit', file_path: 'C:\\work\\notes.md' })).toBe(false)
+  expect(touchesChecklist({ tool: 'Read', file_path: 'C:\\work\\checklist.md' })).toBe(false)
+  expect(touchesChecklist({ tool: 'Bash', command: "printf '- [ ] a' > checklist.md" })).toBe(true)
+  expect(touchesChecklist({ tool: 'Bash', command: 'npm test' })).toBe(false)
+})
+
+test('nodeHeight: a timeline node grows with the number of text lines beside it', () => {
+  expect([nodeHeight(1), nodeHeight(2), nodeHeight(3), nodeHeight(5)]).toEqual([48, 48, 72, 120])
+})
+
+test('isProjectSession: the project system\'s title, now or in previousTitles, marks a project session', () => {
+  expect(isProjectSession({ title: 'Remote Control session (from a project)' })).toBe(true)
+  expect(isProjectSession({ title: 'Backtest progress', previousTitles: ['Remote Control session (from a project)'] })).toBe(true)
+  expect(isProjectSession({ title: 'Backtest progress', previousTitles: ['Old name'] })).toBe(false)
+  expect(isProjectSession(null)).toBe(false)
 })

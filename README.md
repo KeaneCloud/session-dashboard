@@ -7,7 +7,7 @@ A [Claude Code](https://claude.com/claude-code) mod that adds a **Sessions pane*
 - **Current session** – a timeline of the task's steps (up to 5, centred on the one in progress). When Claude has not reported any steps, it shows a single line: what the task is and how many minutes it has been running.
 - **Other sessions** – one row each, with a status light, name, progress bar and time. Click a name to jump to that session.
 - **Usage** – the session (5-hour) limit and weekly limit, pinned to the bottom of the pane and refreshed once a minute.
-- **Auto-naming** – after 3 turns, a small model reads the whole conversation and gives the session a short name (10 words or fewer; a CJK character counts as one word). Sessions you renamed yourself are left alone.
+- **Auto-naming** – after 3 turns, a small model reads the whole conversation and gives the session a short name (10 words or fewer; a CJK character counts as one word). Sessions you renamed yourself, and sessions started by the desktop app's project system, are left alone.
 - **✕ Untrack** – press it and the session disappears from the pane. It comes back when you open that session again.
 
 ### Status lights
@@ -82,7 +82,7 @@ The mod registers a tool, `mcp__session-dashboard__progress`. When Claude calls 
   problem) / todo. Pass an empty list when the task is over.
 ```
 
-When Claude has not called the tool, the pane falls back to the checkboxes in `checklist.md` (or `TASKS.md`) in the working folder:
+When Claude has not called the tool, the pane falls back to the checkboxes in `checklist.md` (or `TASKS.md`) in the working folder, but only once that session has written to the file itself. A checklist left there by another session is ignored:
 
 ```markdown
 - [x] A finished step

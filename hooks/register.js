@@ -9,7 +9,7 @@ import {
   desktopRecordMatches, currentStepLabel, splitHidden, COLORS, ago,
   actionLabel, pushAction, showActivity, summarizeBackground,
   ROWS, FALLBACK_BUDGET, usageRows, fitSteps, othersRows,
-  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, svgAlertIcon, conversationDigest,
+  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, touchesChecklist, nodeHeight, isProjectSession, svgAlertIcon, conversationDigest,
 } from './lib.js'
 
 // ===== Tunables (edit here) =====
@@ -33,12 +33,15 @@ const PANE_BUTTON_LABEL = '☰ Sessions' // Label of the open-pane button above 
 // Auto-naming: after turn RENAME_AFTER_TURNS, a small model picks a name of at most TITLE_MAX units, once per session; manually renamed sessions are left alone
 const AUTO_RENAME = true               // Set to false to turn auto-naming off
 const RENAME_AFTER_TURNS = 3
-const TITLE_MAX = 10
+const TITLE_MAX = 6                   // Longest name in units; a name with a "-purpose" suffix may add SUFFIX_MAX more (user's rule, 2026-10-19: the noun for the thing, nothing else)
+const SUFFIX_MAX = 3
 const RENAME_MODEL = 'haiku'
 const RENAME_TOOL = 'mcp__ccd_session_mgmt__set_session_title' // Desktop's official rename tool (records the title source as "tool")
 const RENAMED_PREFIX = 'renamed:'      // $.store: sessions already auto-named (guarantees a single attempt, no retry on failure)
 const TASK_LABEL_MAX = 12            // Max length of the current-task summary (edit here)
 const NAME_RESERVED_CELLS = 16         // Cells taken on an other-session name line by ✕, the light and the right-hand time (approx.)
+const OWNS_PREFIX = 'checklist:'        // $.store: sessions that wrote a checklist file themselves (only those show it as their steps)
+const STEP_RESERVED_CELLS = 6          // Cells taken by the timeline node and gap to the left of a step's text
 const SECTION_GAP = 3                  // Blank lines between the current session and "other sessions" (shrinks first when space is tight)
 
 // Icon and text colour per step status (terminal; Desktop draws timeline dots)
@@ -55,7 +58,7 @@ const me = {
   id: '', cwd: '', isWorking: false, workStartedAt: null, finishedAt: null, seenAt: null,
   activity: null, activityPublishedAt: 0, background: null, firstSeen: null, queuedHinted: false,
   title: null, desktopId: null, desktopFile: null, titleCheckedAt: 0,
-  lastFocusedAt: null, focusFileMtime: 0, timers: [], titleSource: null, pendingTitle: null, taskLabel: null, lastSignature: null,
+  lastFocusedAt: null, focusFileMtime: 0, timers: [], titleSource: null, fromProject: false, pendingTitle: null, taskLabel: null, lastSignature: null, ownsChecklist: false,
 }
 
 // ---------- Reading files ----------
@@ -157,6 +160,7 @@ async function refreshTitle($, now) {
     me.title = typeof record.title === 'string' && record.title.trim() !== '' ? record.title.trim() : null
     me.desktopId = record.sessionId ?? null
     me.titleSource = record.titleSource ?? null
+    me.fromProject = isProjectSession(record)
     if (typeof record.lastFocusedAt === 'number') me.lastFocusedAt = record.lastFocusedAt
   }
   if (!me.title) me.title = await transcriptTitle($)
@@ -188,7 +192,9 @@ async function refreshFocus($) {
 async function currentSteps($) {
   const progress = me.id ? await $.store.get(PROGRESS_PREFIX + me.id) : null
   if (progress && Array.isArray(progress.steps) && progress.steps.length > 0) return { progress, steps: progress.steps, source: 'tool' }
-  const steps = await readTaskSteps($, me.cwd)
+  // A checklist in the working folder may belong to another session in the same folder, or be a general to-do list:
+  // show it only when this session has written to it
+  const steps = me.ownsChecklist ? await readTaskSteps($, me.cwd) : null
   return { progress: null, steps: steps ?? [], source: steps ? 'tasks' : null }
 }
 
@@ -231,6 +237,17 @@ async function loadOthers($, now) {
     if (entry.id !== me.id && !(me.desktopId && entry.desktopId === me.desktopId)) entries.push(entry)
   }
   return liveSessions(entries, now)
+}
+
+/** Names of every other session in the store (stale ones too: a finished session's name still counts as taken). */
+async function otherNames($) {
+  const names = new Set()
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith(KEY_PREFIX)) continue
+    const entry = await $.store.get(key)
+    if (entry?.id !== me.id && !(me.desktopId && entry?.desktopId === me.desktopId) && typeof entry?.name === 'string' && entry.name.trim()) names.add(entry.name.trim())
+  }
+  return [...names]
 }
 
 /** Load hidden records { [id]: { at } }: per-session keys plus the legacy single-object record. */
@@ -310,6 +327,7 @@ async function adoptSessionId($) {
   me.background = null
   me.finishedAt = null
   me.seenAt = null
+  me.ownsChecklist = false
   me.firstSeen = await $.clock.now()
   me.titleCheckedAt = 0
   me.desktopFile = null
@@ -319,7 +337,7 @@ async function adoptSessionId($) {
 /**
  * Auto-naming: after turn RENAME_AFTER_TURNS, pick a name of at most TITLE_MAX units from the conversation, exactly once (the marker is written before the call, so a failure is not retried).
  * How: prefer Desktop's official rename tool (the app code confirms the title source is recorded as "tool"); if it cannot be called, wait for the next submitted prompt and
- * set it via UserPromptSubmit's sessionTitle (works for terminal sessions; whether Desktop honours it is unverified). A manually renamed session (titleSource = user) is left alone.
+ * set it via UserPromptSubmit's sessionTitle (works for terminal sessions; whether Desktop honours it is unverified). A manually renamed session (titleSource = user) and a session started by the project system are left alone, so the pane shows the same name as the project page.
  */
 async function maybeRename($) {
   if (!AUTO_RENAME || !me.id) return
@@ -328,11 +346,15 @@ async function maybeRename($) {
   await $.store.set(RENAMED_PREFIX + me.id, { at: await $.clock.now() })
   me.titleCheckedAt = 0
   await refreshTitle($, await $.clock.now())
-  if (me.titleSource === 'user') return
+  if (me.titleSource === 'user' || me.fromProject) return
   const convo = conversationDigest(await $.session.messages()) // Uses the whole session, not just the last few messages
+  const taken = await otherNames($)
   let title = ''
   try {
-    title = await askShortName($, t('renameTask'), convo, TITLE_MAX)
+    const task = t('renameTask') + (taken.length ? t('existingNames', taken) : '')
+    title = await askShortName($, task, convo, TITLE_MAX + (taken.length ? SUFFIX_MAX : 0))
+    // Same name as another session: ask once for a "-purpose" suffix so the two can be told apart
+    if (title && taken.includes(title)) title = (await askShortName($, t('duplicateName', title), convo, TITLE_MAX + SUFFIX_MAX)) || title
   } catch {
     return
   }
@@ -435,7 +457,7 @@ function svgBox(els, key, source, alt) {
  * One timeline segment: a dot with connector lines above and below on the left (Svg on Desktop, characters and "│" in the terminal), a title plus one note line on the right.
  * Every segment is exactly ROWS.step rows tall, so the lines of adjacent segments meet.
  */
-function timelineRow(els, isDesktop, item, i) {
+function timelineRow(els, isDesktop, item, i, columns) {
   const { Box, Text } = els
   const step = item.step
   const title = step ? step.title : item.text
@@ -444,7 +466,10 @@ function timelineRow(els, isDesktop, item, i) {
   const isMeta = !step // "N steps done" / "N more steps"
   let marker
   if (isDesktop && els.Svg) {
-    marker = svgBox(els, 'node-' + i, svgTimelineNode(item.kind, item.label, item.top, item.bottom), title)
+    // The node is as tall as the text beside it, so the connector still reaches the next node when a title wraps
+    const cells = Math.max(8, (columns ?? 40) - STEP_RESERVED_CELLS)
+    const lines = wrapByWidth(title, cells).length + (note ? wrapByWidth(note, cells).length : 0)
+    marker = svgBox(els, 'node-' + i, svgTimelineNode(item.kind, item.label, item.top, item.bottom, nodeHeight(lines)), title)
   } else {
     const icon = { done: '✓', collapsed: '✓', running: '●', warn: '!', bad: '!', todo: '○', more: '┆' }[item.kind] ?? '○'
     const color = { done: 'green', collapsed: 'green', running: 'cyan', warn: 'yellow', bad: 'red' }[item.kind]
@@ -476,7 +501,7 @@ function backgroundRow(els) {
 }
 
 /** Current-session block: bold name (remaining time on the right) plus the latest 5 steps. maxRows is the number of rows available to this block. */
-async function currentSection($, els, isDesktop, now, maxRows) {
+async function currentSection($, els, isDesktop, now, maxRows, columns) {
   const { Box, Text } = els
   const { progress, steps, source } = await currentSteps($)
   const title = me.title ?? folderName(me.cwd)
@@ -493,7 +518,7 @@ async function currentSection($, els, isDesktop, now, maxRows) {
   else if (steps.length === 0) rows.push(Text({ dimColor: true, children: [t('noSteps')] }))
   // Timeline: "N steps done" → latest 5 steps → "N more steps", all joined into one line
   const fit = fitSteps(steps, Math.max(0, maxRows - rows.length))
-  timelineItems(fit).forEach((item, i) => rows.push(timelineRow(els, isDesktop, item, i)))
+  timelineItems(fit).forEach((item, i) => rows.push(timelineRow(els, isDesktop, item, i, columns)))
   return rows
 }
 
@@ -532,7 +557,8 @@ function otherRow($, els, isDesktop, s, now, columns) {
     flexDirection: 'row', justifyContent: 'space-between', columnGap: 1,
     children: [
       Box({ flexDirection: 'row', columnGap: 1, flexShrink: 1, alignItems: 'flex-start', children: [hide, dot, name] }),
-      Text({ dimColor: true, children: [[pct === null ? '' : pct + '%', rightTime(s, now)].filter(Boolean).join(' · ')] }),
+      // The time column keeps its width and stays on one line; the name is what wraps
+      Box({ flexShrink: 0, children: [Text({ dimColor: true, wrap: 'truncate-end', children: [[pct === null ? '' : pct + '%', rightTime(s, now)].filter(Boolean).join(' · ')] })] }),
     ],
   })
   // The progress bar extends almost to the right edge (same width as the usage bars); the terminal uses a text bar sized to the pane width
@@ -614,6 +640,7 @@ export function register(on) {
     me.isWorking = false
     me.titleCheckedAt = 0
     me.firstSeen = me.firstSeen ?? (await $.clock.now())
+    me.ownsChecklist = !!(await $.store.get(OWNS_PREFIX + me.id))
     if (AUTO_OPEN) await openPane($, false)
     me.timers = [
       // Registering the tool waits until it is actually usable (measured at about 0.9 s), so it also runs in the background and does not block session start
@@ -651,6 +678,11 @@ export function register(on) {
 
   // Record every tool action (except the progress tool itself); observe only, never block; write to the store at most once per ACTIVITY_PUBLISH_MS
   on('tool.call', async ($, e, next) => {
+    if (!me.ownsChecklist && touchesChecklist(e)) {
+      me.ownsChecklist = true
+      if (me.id) await $.store.set(OWNS_PREFIX + me.id, { at: await $.clock.now() })
+      $.ui.invalidate('ui.render')
+    }
     if (me.activity && e.tool !== PROGRESS_TOOL) {
       const now = await $.clock.now()
       me.activity = { ...me.activity, actions: pushAction(me.activity.actions, actionLabel(e), now) }
@@ -728,6 +760,7 @@ export function register(on) {
     if (me.id) {
       await $.store.delete(KEY_PREFIX + me.id)
       await $.store.delete(PROGRESS_PREFIX + me.id)
+      await $.store.delete(OWNS_PREFIX + me.id)
     }
     me.id = ''
     if (e.reason !== 'clear' && e.reason !== 'resume') {
@@ -778,7 +811,7 @@ export function register(on) {
     const overflow = contentRows - othersNeed < currentMin
     // SECTION_GAP blank lines between the current session and "other sessions"; this gap shrinks first when space is tight
     const gap = shown > 0 ? Math.max(0, Math.min(SECTION_GAP, contentRows - othersNeed - currentMin)) : 0
-    const current = await currentSection($, els, isDesktop, now, overflow ? currentMin : contentRows - othersNeed - gap)
+    const current = await currentSection($, els, isDesktop, now, overflow ? currentMin : contentRows - othersNeed - gap, e.props.bodyColumns)
     const children = [Box({ flexDirection: 'column', children: current })]
     if (shown > 0) {
       for (let g = 0; g < gap; g++) children.push(Text({ key: 'section-gap-' + g, children: [' '] }))

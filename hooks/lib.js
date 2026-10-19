@@ -154,13 +154,41 @@ export function mergeProgress(prev, input, nowMs) {
  * TASKS.md → step list (fallback when Claude didn't call the progress tool).
  * [x] = done; a [ ] containing BLOCKED = warn (the text after BLOCKED becomes the note); the first other [ ] = running; the rest are todo.
  */
+/** Tidy a checklist item for display: drop URLs (with the brackets around them) and Markdown backticks. */
+// Desktop's beta project system names the sessions it starts "Remote Control session (from a project)" (seen in the session records, 2026-10-19)
+const PROJECT_TITLE_MARK = '(from a project)'
+
+/** Whether a Desktop session record belongs to a session started by the project system (its first title carries PROJECT_TITLE_MARK). */
+export function isProjectSession(record) {
+  const titles = [record?.title, ...(Array.isArray(record?.previousTitles) ? record.previousTitles : [])]
+  return titles.some((title) => typeof title === 'string' && title.includes(PROJECT_TITLE_MARK))
+}
+
+export function cleanStepText(text) {
+  return String(text ?? '')
+    .replace(/[（(]\s*https?:\/\/[^\s）)]*\s*[）)]/g, '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Whether a tool call writes one of the checklist files (CHECKLIST_FILES); reading one does not count. */
+export function touchesChecklist(e) {
+  const tool = String(e?.tool ?? '')
+  const isChecklist = (s) => CHECKLIST_FILES.some((name) => String(s ?? '').toLowerCase().includes(name.toLowerCase()))
+  if (['Edit', 'Write', 'MultiEdit'].includes(tool)) return isChecklist(String(e.file_path ?? '').split(/[\\/]/).pop())
+  if (tool === 'Bash' || tool === 'PowerShell') return isChecklist(e.command)
+  return false
+}
+
 export function parseTaskSteps(md) {
   const steps = []
   let runningAssigned = false
   for (const line of String(md ?? '').split(/\r?\n/)) {
     const m = line.match(TASK_LINE)
     if (!m) continue
-    const text = m[2].trim()
+    const text = cleanStepText(m[2])
     if (m[1] !== ' ') {
       steps.push({ title: text, status: 'done' })
       continue
@@ -262,6 +290,13 @@ export function svgThinBar(pct, fill, width = 280, height = 4) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
     `<rect width="${width}" height="${height}" fill="${COLORS.track}"/>` +
     (w > 0 ? `<rect width="${w}" height="${height}" fill="${fill}"/>` : '') + '</svg>'
+}
+
+const NODE_LINE_PX = 24 // Height of one text row beside a node (px); NODE_HEIGHT is two rows (edit here)
+
+/** Height of a timeline node whose text takes `lines` rows, so the connector still reaches the next node when a title wraps. */
+export function nodeHeight(lines) {
+  return Math.max(NODE_HEIGHT, lines * NODE_LINE_PX)
 }
 
 export const NODE_HEIGHT = 48 // Height of each timeline node (px). Must be ≥ the height of one text row (title + one line of description) so the lines of adjacent nodes connect (edit here)
@@ -617,18 +652,28 @@ export function conversationDigest(messages, budget = 6000) {
 
 /** Wraps by display width: CJK characters count as 2 cells, others as 1; drops no characters, for name buttons where "every line must be clickable". */
 export function wrapByWidth(text, cells) {
+  const width = (str) => [...str].reduce((n, ch) => n + (ch.codePointAt(0) > 0x2e7f ? 2 : 1), 0)
   const lines = []
   let line = ''
-  let used = 0
   for (const ch of String(text ?? '')) {
-    const w = ch.codePointAt(0) > 0x2e7f ? 2 : 1
-    if (used + w > cells && line !== '') {
-      lines.push(line)
-      line = ''
-      used = 0
+    if (width(line + ch) > cells && line !== '') {
+      // A space that does not fit ends the line (it hangs past the edge, unseen) instead of starting the next one
+      if (ch === ' ') {
+        lines.push(line + ch)
+        line = ''
+        continue
+      }
+      // Otherwise break after the last space when there is one, so English words stay whole
+      const cut = line.lastIndexOf(' ')
+      if (cut >= 0 && cut < line.length - 1) {
+        lines.push(line.slice(0, cut + 1))
+        line = line.slice(cut + 1)
+      } else {
+        lines.push(line)
+        line = ''
+      }
     }
     line += ch
-    used += w
   }
   if (line !== '' || lines.length === 0) lines.push(line)
   return lines

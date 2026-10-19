@@ -534,7 +534,7 @@ test('long text wraps: task, step titles and notes all use wrap; a long other-se
   await start($, clock)
   const ui = await $.ui.mount({ ...pane(40), props: { ...pane(40).props, bodyColumns: 40 } })
   const texts = (await ui.findAll({ type: 'Text' })) as any[]
-  expect(texts.filter((t) => t.props.wrap === 'truncate-end').map((t) => t.children[0])).toEqual([])
+  expect(texts.filter((t) => t.props.wrap === 'truncate-end' && !/^$|ago$|^~|%/.test(String(t.children[0] ?? ''))).map((t) => t.children[0])).toEqual([])
   const parts = ((await ui.findAll({ type: 'Button' })) as any[]).filter((b) => String(b.props.key).startsWith('jump-o1'))
   expect(parts.length).toBeGreaterThan(1)
   expect(parts.map((b) => b.props.label).join('')).toBe(long)
@@ -581,10 +581,10 @@ test('the timeline is one continuous line: every node has the same height, "N do
 })
 
 /** Stubs for auto-naming: turn count, conversation messages, the small model, the rename tool */
-function stubRename(on: any, opts: { turns: number; reply?: string; replies?: string[]; messages?: any[]; prompts?: string[]; toolFails?: boolean; calls: any[] }): Opts {
+function stubRename(on: any, opts: { turns: number; reply?: string; replies?: string[]; messages?: any[]; prompts?: string[]; systems?: string[]; toolFails?: boolean; calls: any[] }): Opts {
   on('session.turns', () => ({ value: opts.turns }))
   on('session.messages', () => ({ value: opts.messages ?? [{ role: 'user', text: 'Adjust the pane spacing', toolUses: [] }, { role: 'assistant', text: 'OK', toolUses: [] }] }))
-  on('model.complete', ($: any, e: any) => (opts.calls.push(['model', e.model]), opts.prompts?.push(e.prompt), { value: { isAnswered: true, text: opts.replies?.shift() ?? opts.reply ?? '"Pane spacing and timeline"', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }))
+  on('model.complete', ($: any, e: any) => (opts.calls.push(['model', e.model]), opts.prompts?.push(e.prompt), opts.systems?.push(e.system), { value: { isAnswered: true, text: opts.replies?.shift() ?? opts.reply ?? '"Pane spacing and timeline"', usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }))
   on('ui.log', () => ({ value: undefined }))
   on('classic.UserPromptSubmit', () => ({}))
   return {
@@ -647,6 +647,59 @@ test('auto-naming: a session renamed by hand (titleSource = user) is left alone'
   await clock.advance(0)
   await clock.settle()
   expect(calls).toEqual([])
+})
+
+test('auto-naming: a session started by the project system keeps the project name, and the pane shows that name', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  const calls: any[] = []
+  const clock = stubEngine(on, saved, { ...stubRename(on, { turns: 5, calls }), desktopTitle: 'Remote Control session (from a project)', titleSource: 'auto' })
+  await start($, clock)
+  await complete($)
+  await clock.advance(0)
+  await clock.settle()
+  expect(calls).toEqual([])
+  expect((saved.get('session:me-1') as any)?.name).toBe('Remote Control session (from a project)')
+})
+
+test('auto-naming: the rule asks for the noun only (no verbs, no adjectives), at most 6 units, and lists the other sessions\' names', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  saved.set('session:other', other({ name: 'Admin site' }))
+  const calls: any[] = []
+  const systems: string[] = []
+  const clock = stubEngine(on, saved, stubRename(on, { turns: 3, calls, systems, reply: 'Pane spacing' }))
+  await start($, clock)
+  await complete($)
+  await clock.advance(0)
+  await clock.settle()
+  expect(systems[0]).toContain('no verbs and no adjectives')
+  expect(systems[0]).toContain('Admin site')
+  expect(systems[0]).toContain('-<purpose>')
+  expect(systems[0]).toContain('At most 9 words') // 6 + a 3-unit "-purpose" suffix when other sessions exist
+})
+
+test('auto-naming: a name already used by another session is asked once more for a "-purpose" suffix', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  saved.set('session:other', other({ name: 'Admin site' }))
+  const calls: any[] = []
+  const clock = stubEngine(on, saved, stubRename(on, { turns: 3, calls, replies: ['Admin site', 'Admin site-login'] }))
+  await start($, clock)
+  await complete($)
+  await clock.advance(0)
+  await clock.settle()
+  expect(calls).toEqual([['model', 'haiku'], ['model', 'haiku'], ['rename', 'self', 'Admin site-login']])
+})
+
+test('auto-naming: with no other sessions the limit is 6 units', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  const calls: any[] = []
+  const systems: string[] = []
+  const clock = stubEngine(on, saved, stubRename(on, { turns: 3, calls, systems, reply: 'Pane spacing' }))
+  await start($, clock)
+  await complete($)
+  await clock.advance(0)
+  await clock.settle()
+  expect(systems[0]).toContain('At most 6 words')
+  expect(systems[0]).not.toContain('Other sessions are named')
 })
 
 test('one Desktop session whose CLI id changed is listed once, keeping the entry with the latest heartbeat', async ($, on) => {
@@ -713,6 +766,7 @@ test('the pane reads checklist.md (preferred when present, TASKS.md otherwise)',
   const saved = new Map<string, unknown>()
   const clock = stubEngine(on, saved, { tasksMd: '- [ ] Old TASKS item\n', checklistMd: '- [x] Back up\n- [ ] Update checklist rules\n- [ ] Write tests\n' })
   await start($, clock)
+  await $.tool.call({ tool: 'Edit', file_path: CWD + '\\checklist.md', old_string: 'a', new_string: 'b' })
   const ui = await $.ui.mount(pane(30))
   expect(await ui.find({ type: 'Text', text: 'Update checklist rules' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Old TASKS item' })).toBeUndefined()
@@ -736,4 +790,36 @@ test('fewer redraws: none when other sessions are unchanged; within 10 s of a ch
   expect(redraws).toBe(1)
   await clock.advance(25_000) // second 61: the once-a-minute redraw
   expect(redraws).toBe(2)
+})
+
+test('a checklist in the working folder is ignored until this session writes to it', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  const clock = stubEngine(on, saved, { checklistMd: '- [ ] Someone else\'s to-do\n- [ ] Another item\n' })
+  await start($, clock)
+  const before = await $.ui.mount(pane(30))
+  expect(await before.find({ type: 'Text', text: "Someone else's to-do" })).toBeUndefined()
+  expect(await before.find({ type: 'Text', text: 'No steps in progress' })).toBeDefined()
+  expect((saved.get('session:me-1') as any).stats.total).toBe(0)
+  await before.unmount()
+  await $.tool.call({ tool: 'Write', file_path: CWD + '\\checklist.md', content: 'x' })
+  const after = await $.ui.mount(pane(30))
+  expect(await after.find({ type: 'Text', text: "Someone else's to-do" })).toBeDefined()
+})
+
+test('a step that wraps onto several lines gets a taller timeline node; the time on the right never wraps', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  saved.set('session:o1', other({ id: 'o1', name: 'Docs site', desktopId: 'local_o1-1', finishedAt: NOW - 3 * 60 * MIN, stats: { done: 0, total: 2, pct: 0, hasWarn: false, hasBad: false } }))
+  saved.set('progress:me-1', { startedAt: NOW, updatedAt: NOW, steps: [
+    { title: 'A very long step title that will need several lines in a narrow pane to be shown in full', status: 'running' },
+    { title: 'Short', status: 'todo' },
+  ] })
+  const clock = stubEngine(on, saved)
+  await start($, clock)
+  const ui = await $.ui.mount({ ...pane(40), props: { ...pane(40).props, bodyColumns: 40 } })
+  const heightOf = (svg?: string) => Number(svg?.match(/height="(\d+)"/)?.[1])
+  expect(heightOf(await svgOf(ui, 'node-0'))).toBeGreaterThan(48)
+  expect(heightOf(await svgOf(ui, 'node-1'))).toBe(48)
+  const right = ((await ui.find({ key: 'proj-o1' })) as any).children[0].children[1]
+  expect(right.props.flexShrink).toBe(0)
+  expect(right.children[0].props.wrap).toBe('truncate-end')
 })
