@@ -540,6 +540,61 @@ export function nameUnits(text) {
 // ===== Status lights =====
 
 // Light colors (edit here): problem needing attention = red light, severe problem = red triangle icon, in progress = blue, finished but unread = orange, seen = gray hollow; there is no green light by design
+// Order of other sessions: what needs the user first, then finished-but-unseen, then working, then seen
+const URGENCY_RANK = { bad: 0, warn: 0, unread: 1, working: 2, idle: 3 }
+
+/** Most recent activity time of a session, used to order sessions within one urgency level. */
+function lastActivity(s) {
+  return Math.max(s?.finishedAt ?? 0, s?.workStartedAt ?? 0, s?.firstSeen ?? 0)
+}
+
+/** Sort other sessions by urgency (URGENCY_RANK), the most recently active first within a level. */
+export function sortByUrgency(list) {
+  return [...list].sort((a, b) => (URGENCY_RANK[statusOf(a)] - URGENCY_RANK[statusOf(b)]) || (lastActivity(b) - lastActivity(a)) || String(a.id).localeCompare(String(b.id)))
+}
+
+/** Group key of a session name: the part before the first "-" (the naming rule puts the purpose after it). */
+export function groupKey(name) {
+  return String(name ?? '').split('-')[0].trim()
+}
+
+/**
+ * Lay out sorted sessions as rows: sessions that need the user stay at the top, ungrouped;
+ * the rest are grouped by groupKey when 2 or more share it, the group placed where its first member falls.
+ * Returns items { type: 'header', key, name, count } or { type: 'row', s }.
+ */
+export function groupSessions(sorted) {
+  const urgent = sorted.filter((s) => URGENCY_RANK[statusOf(s)] === 0)
+  const rest = sorted.filter((s) => URGENCY_RANK[statusOf(s)] !== 0)
+  const counts = new Map()
+  for (const s of rest) counts.set(groupKey(s.name), (counts.get(groupKey(s.name)) ?? 0) + 1)
+  const items = urgent.map((s) => ({ type: 'row', s }))
+  const placed = new Set()
+  for (const s of rest) {
+    const key = groupKey(s.name)
+    if ((counts.get(key) ?? 0) < 2) { items.push({ type: 'row', s }); continue }
+    if (placed.has(key)) continue
+    placed.add(key)
+    const members = rest.filter((m) => groupKey(m.name) === key)
+    items.push({ type: 'header', key, name: key, count: members.length }, ...members.map((m) => ({ type: 'row', s: m })))
+  }
+  return items
+}
+
+/** The one line shown under a session while the pointer is on it: { kind: 'stuck' | 'doing' | 'done', text }, or null when there is nothing to say. */
+export function hoverInfo(s) {
+  const status = statusOf(s)
+  if (status === 'bad' || status === 'warn') {
+    const text = s.alertNote || s.stepLabel
+    return text ? { kind: 'stuck', text } : null
+  }
+  if (status === 'working') {
+    const text = s.stepLabel || s.activity?.current
+    return text ? { kind: 'doing', text } : null
+  }
+  return s.lastDoneLabel ? { kind: 'done', text: s.lastDoneLabel } : null
+}
+
 export const LIGHT = { bad: '#c8222b', warn: '#c8222b', working: '#0088b0', unread: '#e07a10', idle: '#77756f' }
 
 /** Icon for a severe problem (work may be unable to continue): red-outlined rounded triangle + exclamation mark, replacing the status dot. */

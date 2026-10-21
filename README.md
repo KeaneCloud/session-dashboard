@@ -5,9 +5,9 @@ A [Claude Code](https://claude.com/claude-code) mod that adds a **Sessions pane*
 ## What it does
 
 - **Current session** – a timeline of the task's steps (up to 5, centred on the one in progress). When Claude has not reported any steps, it shows a single line: what the task is and how many minutes it has been running.
-- **Other sessions** – one row each, with a status light, name, progress bar and time. Click a name to jump to that session.
+- **Other sessions** – one block each, with a status light, name, progress bar and time. The whole block lights up under the pointer and shows one more line (what it is doing, what it needs from you, or what it finished); click the name or the time to jump to that session. Sessions that need you come first, then finished-but-unseen, working, and seen. Sessions whose names share the part before `-` (for example `Admin site` and `Admin site-login`) are grouped under one header.
 - **Usage** – the session (5-hour) limit and weekly limit, pinned to the bottom of the pane and refreshed once a minute.
-- **Auto-naming** – after 3 turns, a small model reads the whole conversation and gives the session a short name (10 words or fewer; a CJK character counts as one word). Sessions you renamed yourself, and sessions started by the desktop app's project system, are left alone.
+- **Auto-naming** – after 2 turns, a small model reads the whole conversation and names the session after the thing being worked on: a noun only, 6 words or fewer (a CJK character counts as one word). A name another session already uses gets a `-purpose` suffix. Sessions you renamed yourself, and sessions started by the desktop app's project system, are left alone.
 - **✕ Untrack** – press it and the session disappears from the pane. It comes back when you open that session again.
 
 ### Status lights
@@ -108,8 +108,8 @@ Tunable values are constants at the top of `hooks/register.js` and `hooks/lib.js
 |---|---|---|
 | `AUTO_OPEN` | `true` | Open the pane when a session starts |
 | `AUTO_RENAME` | `true` | Name sessions automatically |
-| `RENAME_AFTER_TURNS` | `3` | Turn after which a session is named |
-| `TITLE_MAX` | `10` | Longest session name, in words |
+| `RENAME_AFTER_TURNS` | `2` | Turn after which a session is named |
+| `TITLE_MAX` | `6` | Longest session name, in words (plus up to `SUFFIX_MAX` for a `-purpose` suffix) |
 | `TASK_LABEL_MAX` | `12` | Longest task summary, in words |
 | `TIME_REDRAW_MS` | 60 s | How often times and usage are refreshed |
 | `CHANGE_CHECK_MS` | 10 s | How often other sessions are checked for changes |

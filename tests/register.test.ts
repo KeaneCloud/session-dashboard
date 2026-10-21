@@ -224,15 +224,16 @@ test('other sessions: ✕ comes first, light colors, only the time on the right,
   await start($, clock)
   const ui = await $.ui.mount(pane(30))
   // The light is the 2nd element on the left of the name line (a Text key cannot be used with find)
-  const light = async (id: string) => ((await ui.find({ key: 'proj-' + id })) as any)?.children[0].children[0].children[1].props.color
+  const light = async (id: string) => ((await ui.find({ key: 'proj-' + id })) as any)?.children[0].children[0].children[0].children[1].props.color
   expect([await light('w'), await light('u'), await light('i')]).toEqual(['#0088b0', '#e07a10', '#77756f']) // blue working, orange finished-unread, gray hollow seen (there is no green light)
   const alert = await svgOf(ui, 'alert-x') // severe problem: red-outlined triangle with an exclamation mark, replacing the dot
   expect(alert).toContain('stroke="#c8222b"')
   expect(alert).toContain('<path')
-  const line1 = ((await ui.find({ key: 'proj-w' })) as any).children[0]
+  const line1 = ((await ui.find({ key: 'proj-w' })) as any).children[0].children[0]
   const left = line1.children[0].children
   expect([left[0].props.key, left[1].type, left[1].children[0], left[2].children[0].props.key]).toEqual(['hide-w', 'Text', '●', 'jump-w']) // ✕ → light → name
-  for (const t of ['75% · ~18m', '5m ago', '2h 5m ago']) expect(await ui.find({ type: 'Text', text: t })).toBeDefined() // the percentage sits on the first line, right side
+  const timeOf = async (id: string) => ((await ui.find({ key: 'jump-' + id + '-time' })) as any)?.props.label
+  expect([await timeOf('w'), await timeOf('u'), await timeOf('i')]).toEqual(['75% · ~18m', '5m ago', '2h 5m ago']) // the percentage sits on the first line, right side, and is clickable
   expect(await ui.find({ type: 'Text', text: /Working ·|Idle ·|· background|In progress…|Done · unread|Current:/ })).toBeUndefined()
   expect(await svgOf(ui, 'line2-w')).toContain('width="210" height="4"') // the bar is stretched: 75% of 280px
   expect(await svgOf(ui, 'line2-u')).not.toContain('<rect') // no steps, no progress bar
@@ -244,8 +245,7 @@ test('idle time uses the work end time, not the heartbeat time (no permanent "ju
   const clock = stubEngine(on, saved)
   await start($, clock)
   const ui = await $.ui.mount(pane(30))
-  expect(await ui.find({ type: 'Text', text: '40m ago' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'just now' })).toBeUndefined()
+  expect(((await ui.find({ key: 'jump-o-time' })) as any)?.props.label).toBe('40m ago')
 })
 
 test('finished unread: finishing while another session is the one being viewed records the finish time as unseen', async ($, on) => {
@@ -286,7 +286,7 @@ test('another session with background work shows a blue light and no status text
   const clock = stubEngine(on, saved)
   await start($, clock)
   const ui = await $.ui.mount(pane(30))
-  expect(((await ui.find({ key: 'proj-o' })) as any)?.children[0].children[0].children[1].props.color).toBe('#0088b0')
+  expect(((await ui.find({ key: 'proj-o' })) as any)?.children[0].children[0].children[0].children[1].props.color).toBe('#0088b0')
   expect(await ui.find({ type: 'Text', text: /background|Run benchmark/i })).toBeUndefined()
 })
 
@@ -314,8 +314,8 @@ test('dividers: Desktop draws a thick line with "Other sessions" embedded and a 
   const ui = await $.ui.mount(pane(30))
   expect(await svgOf(ui, 'section-divider')).toContain('>Other sessions</text>')
   expect(await ui.find({ type: 'Text', text: 'Other sessions' })).toBeUndefined() // no separate title row
-  expect(await ui.find({ key: 'gap-a' })).toBeUndefined() // no blank row before the first one
-  expect(await svgOf(ui, 'gap-b')).toContain('fill="#ffffff18"') // 1 blank row between sessions, with the faint line inside it
+  expect(await ui.find({ key: 'gap-b' })).toBeUndefined() // no blank row before the first one (b: more recently active, so first)
+  expect(await svgOf(ui, 'gap-a')).toContain('fill="#ffffff18"') // 1 blank row between sessions, with the faint line inside it
   const term = await $.ui.mount(pane(30, 'terminal'))
   expect(await term.find({ type: 'Text', text: /^━+ Other sessions ━+$/ })).toBeDefined()
 })
@@ -376,7 +376,7 @@ test('single page: at 24 and 30 rows nothing overflows, usage is always there, �
       expect({ rows, surface, est: Math.min(estimateRows(root), rows), height: root.props.height }).toEqual({ rows, surface, est: estimateRows(root), height: rows })
       expect(await ui.find({ type: 'Text', text: 'Session limit' })).toBeDefined() // compact when the pane is short, but still there
       const firstProj = (await ui.find({ key: 'proj-o0' })) as any
-      if (firstProj) expect(firstProj.children[0].children[0].children[0].props.key).toBe('hide-o0')
+      if (firstProj) expect(firstProj.children[0].children[0].children[0].children[0].props.key).toBe('hide-o0')
       await ui.unmount()
     }
   }
@@ -598,10 +598,10 @@ function stubRename(on: any, opts: { turns: number; reply?: string; replies?: st
   }
 }
 
-test('auto-naming: after turn 3 a small model picks a short name and the Desktop rename tool is called, exactly once', async ($, on) => {
+test('auto-naming: after turn 2 a small model picks a short name and the Desktop rename tool is called, exactly once', async ($, on) => {
   const saved = new Map<string, unknown>()
   const calls: any[] = []
-  const clock = stubEngine(on, saved, stubRename(on, { turns: 3, calls }))
+  const clock = stubEngine(on, saved, stubRename(on, { turns: 2, calls }))
   await start($, clock)
   await complete($)
   await clock.advance(0)
@@ -614,10 +614,10 @@ test('auto-naming: after turn 3 a small model picks a short name and the Desktop
   expect(calls.length).toBe(2) // not renamed a second time
 })
 
-test('auto-naming: nothing happens before turn 3', async ($, on) => {
+test('auto-naming: nothing happens before turn 2', async ($, on) => {
   const saved = new Map<string, unknown>()
   const calls: any[] = []
-  const clock = stubEngine(on, saved, stubRename(on, { turns: 2, calls }))
+  const clock = stubEngine(on, saved, stubRename(on, { turns: 1, calls }))
   await start($, clock)
   await complete($)
   await clock.advance(0)
@@ -700,6 +700,75 @@ test('auto-naming: with no other sessions the limit is 6 units', async ($, on) =
   await clock.settle()
   expect(systems[0]).toContain('At most 6 words')
   expect(systems[0]).not.toContain('Other sessions are named')
+})
+
+test('whole row: one hover scope with a background, the name lines and the time all jump to the session', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  saved.set('session:o', other({ id: 'o', name: 'A rather long session name that wraps onto a second line here', desktopId: 'local_o-1', finishedAt: NOW - 5 * MIN }))
+  const runs: any[] = []
+  const clock = stubEngine(on, saved, { runs })
+  await start($, clock)
+  const ui = await $.ui.mount({ ...pane(30), props: { ...pane(30).props, bodyColumns: 30 } })
+  const row = (await ui.find({ key: 'proj-o' })) as any
+  expect(row.children[0].hover?.backgroundColor).toBeTruthy() // the Box filling the row lights while the pointer is anywhere on it
+  const presses = ['jump-o', 'jump-o-1', 'jump-o-time']
+  for (const key of presses) await ui.press({ key })
+  expect(runs.length).toBe(3)
+  expect(runs.every((r) => String(r[2]).endsWith('session=local_o-1'))).toBe(true)
+})
+
+test('hover line: hidden until the pointer is on the row; says what needs the user, what is being done, or what was done', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  saved.set('session:x', other({ id: 'x', desktopId: 'local_x-1', stats: { done: 0, total: 2, pct: 0, hasWarn: true, hasBad: false }, alertNote: 'Pick a test period', stepLabel: 'Backtest' }))
+  saved.set('session:w', other({ id: 'w', desktopId: 'local_w-1', isWorking: true, stepLabel: 'Filter rules' }))
+  saved.set('session:d', other({ id: 'd', desktopId: 'local_d-1', finishedAt: NOW - MIN, lastFocusedAt: NOW, lastDoneLabel: 'Ranking page' }))
+  saved.set('session:n', other({ id: 'n', desktopId: 'local_n-1' }))
+  const clock = stubEngine(on, saved)
+  await start($, clock)
+  const ui = await $.ui.mount(pane(40))
+  // The hover line is the last child of the row Box (it has no key of its own: a keyed Box would be its own hover scope)
+  const line = async (id: string) => { const row = ((await ui.find({ key: 'proj-' + id })) as any).children[0]; const last = row.children[row.children.length - 1]; return last?.props?.display === 'none' ? last : undefined }
+  for (const id of ['x', 'w', 'd']) {
+    expect((await line(id)).props.display).toBe('none')
+    expect((await line(id)).hover ?? (await line(id)).props.hover).toEqual({ display: 'flex' })
+  }
+  expect((await line('x')).children[0].children[0]).toBe('Needs you: Pick a test period')
+  expect((await line('w')).children[0].children[0]).toBe('Doing: Filter rules')
+  expect((await line('d')).children[0].children[0]).toBe('Done: Ranking page')
+  expect(await line('n')).toBeUndefined() // nothing to say, no line
+})
+
+test('order: needs-you first, then finished-unseen, then working, then seen; most recently active first within a level', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  saved.set('session:i', other({ id: 'i', name: 'Seen', desktopId: 'local_i-1', firstSeen: 1, finishedAt: NOW - 10 * MIN, lastFocusedAt: NOW }))
+  saved.set('session:w', other({ id: 'w', name: 'Working', desktopId: 'local_w-1', firstSeen: 2, isWorking: true, workStartedAt: NOW - MIN }))
+  saved.set('session:u1', other({ id: 'u1', name: 'Unread old', desktopId: 'local_u1-1', firstSeen: 3, finishedAt: NOW - 30 * MIN, lastFocusedAt: NOW - 60 * MIN }))
+  saved.set('session:u2', other({ id: 'u2', name: 'Unread new', desktopId: 'local_u2-1', firstSeen: 4, finishedAt: NOW - 2 * MIN, lastFocusedAt: NOW - 60 * MIN }))
+  saved.set('session:x', other({ id: 'x', name: 'Needs you', desktopId: 'local_x-1', firstSeen: 5, stats: { done: 0, total: 1, pct: 0, hasWarn: true, hasBad: false } }))
+  const clock = stubEngine(on, saved)
+  await start($, clock)
+  const ui = await $.ui.mount(pane(60))
+  const order: string[] = []
+  const walk = (n: any) => { if (!n || typeof n !== 'object') return; if (typeof n.props?.key === 'string' && n.props.key.startsWith('proj-')) order.push(n.props.key.slice(5)); (n.children ?? []).forEach(walk) }
+  walk(await ui.find({ key: 'content' }))
+  expect(order).toEqual(['x', 'u2', 'u1', 'w', 'i'])
+})
+
+test('groups: sessions sharing the name before "-" sit together under a header with the count; a lone name is not grouped; needs-you stays on top', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  saved.set('session:a', other({ id: 'a', name: 'Admin site', desktopId: 'local_a-1', firstSeen: 1, finishedAt: NOW - 50 * MIN, lastFocusedAt: NOW }))
+  saved.set('session:b', other({ id: 'b', name: 'Docs', desktopId: 'local_b-1', firstSeen: 2, finishedAt: NOW - 40 * MIN, lastFocusedAt: NOW }))
+  saved.set('session:c', other({ id: 'c', name: 'Admin site-login', desktopId: 'local_c-1', firstSeen: 3, finishedAt: NOW - 5 * MIN, lastFocusedAt: NOW }))
+  saved.set('session:x', other({ id: 'x', name: 'Admin site-billing', desktopId: 'local_x-1', firstSeen: 4, stats: { done: 0, total: 1, pct: 0, hasWarn: true, hasBad: false } }))
+  const clock = stubEngine(on, saved)
+  await start($, clock)
+  const ui = await $.ui.mount(pane(60))
+  const seq: string[] = []
+  const walk = (n: any) => { if (!n || typeof n !== 'object') return; const k = n.props?.key; if (typeof k === 'string' && (k.startsWith('proj-') || k.startsWith('group-'))) seq.push(k); (n.children ?? []).forEach(walk) }
+  walk(await ui.find({ key: 'content' }))
+  expect(seq).toEqual(['proj-x', 'group-Admin site', 'proj-c', 'proj-a', 'proj-b'])
+  expect(await ui.find({ type: 'Text', text: '▾ Admin site (2)' })).toBeDefined()
+  expect(await ui.find({ key: 'group-Docs' })).toBeUndefined()
 })
 
 test('one Desktop session whose CLI id changed is listed once, keeping the entry with the latest heartbeat', async ($, on) => {
@@ -819,7 +888,7 @@ test('a step that wraps onto several lines gets a taller timeline node; the time
   const heightOf = (svg?: string) => Number(svg?.match(/height="(\d+)"/)?.[1])
   expect(heightOf(await svgOf(ui, 'node-0'))).toBeGreaterThan(48)
   expect(heightOf(await svgOf(ui, 'node-1'))).toBe(48)
-  const right = ((await ui.find({ key: 'proj-o1' })) as any).children[0].children[1]
+  const right = ((await ui.find({ key: 'proj-o1' })) as any).children[0].children[0].children[1]
   expect(right.props.flexShrink).toBe(0)
-  expect(right.children[0].props.wrap).toBe('truncate-end')
+  expect(right.children[0].props.key).toBe('jump-o1-time') // a button: its label never wraps
 })

@@ -9,7 +9,7 @@ import {
   desktopRecordMatches, currentStepLabel, splitHidden, COLORS, ago,
   actionLabel, pushAction, showActivity, summarizeBackground,
   ROWS, FALLBACK_BUDGET, usageRows, fitSteps, othersRows,
-  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, touchesChecklist, nodeHeight, isProjectSession, svgAlertIcon, conversationDigest,
+  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, touchesChecklist, nodeHeight, isProjectSession, sortByUrgency, groupSessions, hoverInfo, svgAlertIcon, conversationDigest,
 } from './lib.js'
 
 // ===== Tunables (edit here) =====
@@ -32,7 +32,7 @@ const AUTO_OPEN = true                 // Open the pane automatically when a ses
 const PANE_BUTTON_LABEL = '☰ Sessions' // Label of the open-pane button above the prompt
 // Auto-naming: after turn RENAME_AFTER_TURNS, a small model picks a name of at most TITLE_MAX units, once per session; manually renamed sessions are left alone
 const AUTO_RENAME = true               // Set to false to turn auto-naming off
-const RENAME_AFTER_TURNS = 3
+const RENAME_AFTER_TURNS = 2 // The user asked for 2 (2026-10-20): 3 turns felt too long
 const TITLE_MAX = 6                   // Longest name in units; a name with a "-purpose" suffix may add SUFFIX_MAX more (user's rule, 2026-10-19: the noun for the thing, nothing else)
 const SUFFIX_MAX = 3
 const RENAME_MODEL = 'haiku'
@@ -42,6 +42,7 @@ const TASK_LABEL_MAX = 12            // Max length of the current-task summary (
 const NAME_RESERVED_CELLS = 16         // Cells taken on an other-session name line by ✕, the light and the right-hand time (approx.)
 const OWNS_PREFIX = 'checklist:'        // $.store: sessions that wrote a checklist file themselves (only those show it as their steps)
 const STEP_RESERVED_CELLS = 6          // Cells taken by the timeline node and gap to the left of a step's text
+const HOVER_BG = '#88888833'                 // Row background while the pointer is on any part of a session (translucent gray works in light and dark)
 const SECTION_GAP = 3                  // Blank lines between the current session and "other sessions" (shrinks first when space is tight)
 
 // Icon and text colour per step status (terminal; Desktop draws timeline dots)
@@ -223,6 +224,9 @@ async function publish($) {
     stats: stepStats(steps),
     eta: source === 'tool' ? etaText(estimateRemainingMin(progress, now)) : null,
     stepLabel: currentStepLabel(steps),
+    // Shown under the row when the pointer is on it in other sessions' panes
+    alertNote: steps.find((step) => (step.status === 'bad' || step.status === 'warn') && step.note)?.note ?? null,
+    lastDoneLabel: [...steps].reverse().find((step) => step.status === 'done')?.title ?? null,
   })
 }
 
@@ -558,14 +562,32 @@ function otherRow($, els, isDesktop, s, now, columns) {
     children: [
       Box({ flexDirection: 'row', columnGap: 1, flexShrink: 1, alignItems: 'flex-start', children: [hide, dot, name] }),
       // The time column keeps its width and stays on one line; the name is what wraps
-      Box({ flexShrink: 0, children: [Text({ dimColor: true, wrap: 'truncate-end', children: [[pct === null ? '' : pct + '%', rightTime(s, now)].filter(Boolean).join(' · ')] })] }),
+      Box({ flexShrink: 0, children: [timeLabel(els, s, url, [pct === null ? '' : pct + '%', rightTime(s, now)].filter(Boolean).join(' · '), () => jumpTo($, url, s.name))] }),
     ],
   })
   // The progress bar extends almost to the right edge (same width as the usage bars); the terminal uses a text bar sized to the pane width
   const line2 = isDesktop && els.Svg
     ? svgBox(els, 'line2-' + s.id, svgOtherLine(pct), pct === null ? s.name : s.name + ' ' + pct + '%')
     : Text({ key: 'line2-' + s.id, color: 'cyan', children: [pct === null ? ' ' : thinBar(pct, Math.max(8, (columns ?? 40) - 4))] })
-  return Box({ key: 'proj-' + s.id, flexDirection: 'column', children: [line1, line2] })
+  const info = hoverInfo(s)
+  const infoText = info ? t(info.kind === 'stuck' ? 'hoverStuck' : info.kind === 'doing' ? 'hoverDoing' : 'hoverDone', info.text) : null
+  // Drawn hidden and revealed while the pointer is anywhere on this session's block (the keyed row Box is the hover scope; this Box has no key, or it would be its own scope)
+  const hoverLine = infoText ? Box({ display: 'none', hover: { display: 'flex' }, children: [Text({ dimColor: true, wrap: 'wrap', children: [infoText] })] }) : null
+  // The keyed outer Box is the hover scope (pointer anywhere on this session); the inner Box fills it and takes the background
+  return Box({ key: 'proj-' + s.id, flexDirection: 'column', children: [
+    Box({ flexDirection: 'column', hover: { backgroundColor: HOVER_BG }, children: [line1, line2, hoverLine].filter(Boolean) }),
+  ] })
+}
+
+/** The time on the right of a row: a button too when the session can be jumped to, so the whole row is clickable. */
+function timeLabel(els, s, url, text, onPress) {
+  if (!url || !text) return els.Text({ dimColor: true, wrap: 'truncate-end', children: [text] })
+  return els.Button({ key: 'jump-' + s.id + '-time', label: text, plain: true, dimColor: true, onPress })
+}
+
+/** Group header above sessions that share a name before "-". */
+function groupHeader(els, item) {
+  return els.Box({ key: 'group-' + item.key, children: [els.Text({ dimColor: true, wrap: 'truncate-end', children: ['▾ ' + t('groupLabel', item.name, item.count)] })] })
 }
 
 /**
@@ -802,12 +824,15 @@ export function register(on) {
     if (compact) usageList = await usageSection($, els, isDesktop, now, true)
     const usageUsed = compact ? usageCount : usageRows(usageCount)
     const contentRows = Math.max(1, budget - usageUsed - 1)
-    const { visible } = splitHidden(await loadOthers($, now), await loadHidden($))
+    const { visible: unsorted } = splitHidden(await loadOthers($, now), await loadHidden($))
+    const visible = sortByUrgency(unsorted)
+    const items = groupSessions(visible)
+    const headerRows = items.filter((item) => item.type === 'header').length
     // All other sessions are listed (no limit, by design); the current session keeps at least name + 1 step, and the pane becomes scrollable if that does not fit
     const currentMin = 1 + ROWS.step
     const shown = visible.length
     const wrapExtra = visible.reduce((n, s) => n + wrapByWidth(s.name, nameCells(e.props.bodyColumns)).length - 1, 0)
-    const othersNeed = othersRows(shown, shown) + wrapExtra
+    const othersNeed = othersRows(shown, shown) + wrapExtra + headerRows
     const overflow = contentRows - othersNeed < currentMin
     // SECTION_GAP blank lines between the current session and "other sessions"; this gap shrinks first when space is tight
     const gap = shown > 0 ? Math.max(0, Math.min(SECTION_GAP, contentRows - othersNeed - currentMin)) : 0
@@ -816,11 +841,19 @@ export function register(on) {
     if (shown > 0) {
       for (let g = 0; g < gap; g++) children.push(Text({ key: 'section-gap-' + g, children: [' '] }))
       const rows = []
-      visible.slice(0, shown).forEach((s, i) => {
+      let first = true
+      for (const item of items) {
+        if (item.type === 'header') {
+          rows.push(groupHeader(els, item))
+          first = true // no divider right under a header
+          continue
+        }
+        const s = item.s
         // 1 blank line between sessions, with a faint thin line drawn inside it
-        if (i > 0) rows.push(isDesktop && els.Svg ? svgBox(els, 'gap-' + s.id, svgSessionGap(), '') : Text({ key: 'gap-' + s.id, children: [' '] }))
+        if (!first) rows.push(isDesktop && els.Svg ? svgBox(els, 'gap-' + s.id, svgSessionGap(), '') : Text({ key: 'gap-' + s.id, children: [' '] }))
+        first = false
         rows.push(otherRow($, els, isDesktop, s, now, e.props.bodyColumns))
-      })
+      }
       children.push(sectionDivider(els, isDesktop, e.props.bodyColumns), Box({ flexDirection: 'column', children: rows }))
     }
     // When it does not fit, do not fix the height or clip; let the pane show its own scrollbar
