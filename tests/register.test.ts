@@ -300,7 +300,7 @@ test('pressing a name jumps to that session; without a Desktop id there is no bu
   const ui = await $.ui.mount(pane(30))
   expect(await ui.find({ key: 'jump-t' })).toBeUndefined()
   await ui.press({ key: 'jump-o' })
-  expect(runs).toEqual([['rundll32.exe', 'url.dll,FileProtocolHandler', 'claude://code/continue?session=local_o-0002']])
+  expect(runs).toEqual([['rundll32.exe', 'url.dll,FileProtocolHandler', 'claude://claude.ai/epitaxy/local_o-0002']])
 })
 
 // ---------- Dividers ----------
@@ -535,7 +535,7 @@ test('long text wraps: task, step titles and notes all use wrap; a long other-se
   const ui = await $.ui.mount({ ...pane(40), props: { ...pane(40).props, bodyColumns: 40 } })
   const texts = (await ui.findAll({ type: 'Text' })) as any[]
   expect(texts.filter((t) => t.props.wrap === 'truncate-end' && !/^$|ago$|^~|%/.test(String(t.children[0] ?? ''))).map((t) => t.children[0])).toEqual([])
-  const parts = ((await ui.findAll({ type: 'Button' })) as any[]).filter((b) => String(b.props.key).startsWith('jump-o1'))
+  const parts = ((await ui.findAll({ type: 'Button' })) as any[]).filter((b) => String(b.props.key).startsWith('jump-o1') && !/-time$/.test(String(b.props.key)))
   expect(parts.length).toBeGreaterThan(1)
   expect(parts.map((b) => b.props.label).join('')).toBe(long)
 })
@@ -649,16 +649,16 @@ test('auto-naming: a session renamed by hand (titleSource = user) is left alone'
   expect(calls).toEqual([])
 })
 
-test('auto-naming: a session started by the project system keeps the project name, and the pane shows that name', async ($, on) => {
+test('auto-naming: a session started by the project system is named from its content, with "-<first 2 characters of the folder>" appended', async ($, on) => {
   const saved = new Map<string, unknown>()
   const calls: any[] = []
-  const clock = stubEngine(on, saved, { ...stubRename(on, { turns: 5, calls }), desktopTitle: 'Remote Control session (from a project)', titleSource: 'auto' })
+  const clock = stubEngine(on, saved, { ...stubRename(on, { turns: 5, calls, reply: 'VCP screen' }), desktopTitle: 'Remote Control session (from a project)', titleSource: 'auto' })
   await start($, clock)
   await complete($)
   await clock.advance(0)
   await clock.settle()
-  expect(calls).toEqual([])
-  expect((saved.get('session:me-1') as any)?.name).toBe('Remote Control session (from a project)')
+  const rename = calls.find((c) => c[0] === 'rename')
+  expect(rename?.[2]).toMatch(/^VCP screen-.{1,2}$/)
 })
 
 test('auto-naming: the rule asks for the noun only (no verbs, no adjectives), at most 6 units, and lists the other sessions\' names', async ($, on) => {
@@ -714,7 +714,7 @@ test('whole row: one hover scope with a background, the name lines and the time 
   const presses = ['jump-o', 'jump-o-1', 'jump-o-time']
   for (const key of presses) await ui.press({ key })
   expect(runs.length).toBe(3)
-  expect(runs.every((r) => String(r[2]).endsWith('session=local_o-1'))).toBe(true)
+  expect(runs.every((r) => String(r[2]).endsWith('/epitaxy/local_o-1'))).toBe(true)
 })
 
 test('hover line: hidden until the pointer is on the row; says what needs the user, what is being done, or what was done', async ($, on) => {
@@ -888,7 +888,25 @@ test('a step that wraps onto several lines gets a taller timeline node; the time
   const heightOf = (svg?: string) => Number(svg?.match(/height="(\d+)"/)?.[1])
   expect(heightOf(await svgOf(ui, 'node-0'))).toBeGreaterThan(48)
   expect(heightOf(await svgOf(ui, 'node-1'))).toBe(48)
+  // The node keeps its size: a squeezed slot would scale it down and break the connecting line
+  const node0 = (await ui.find({ key: 'node-0' })) as any
+  expect(node0.props.flexShrink).toBe(0)
+  expect(node0.children[0].props.height).toBe(heightOf(await svgOf(ui, 'node-0')))
   const right = ((await ui.find({ key: 'proj-o1' })) as any).children[0].children[0].children[1]
   expect(right.props.flexShrink).toBe(0)
   expect(right.children[0].props.key).toBe('jump-o1-time') // a button: its label never wraps
+})
+
+test('the progress bar is exactly as long as the "Other sessions" divider, and neither stretches with the pane', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  saved.set('session:w', other({ id: 'w', name: 'Busy', desktopId: 'local_w-1', stats: { done: 1, total: 2, pct: 50 } }))
+  const clock = stubEngine(on, saved)
+  await start($, clock)
+  for (const cols of [30, 120]) {
+    const ui = await $.ui.mount({ ...pane(30), props: { ...pane(30).props, bodyColumns: cols } })
+    const size = async (key: string) => { const n = (await ui.find({ key })) as any; return [n.props.flexShrink, n.children[0].props.width, n.children[0].props.height] }
+    expect(await size('line2-w')).toEqual([0, 280, 16])
+    expect(await size('section-divider')).toEqual([0, 280, 16])
+    await ui.unmount()
+  }
 })

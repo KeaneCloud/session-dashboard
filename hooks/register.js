@@ -9,7 +9,7 @@ import {
   desktopRecordMatches, currentStepLabel, splitHidden, COLORS, ago,
   actionLabel, pushAction, showActivity, summarizeBackground,
   ROWS, FALLBACK_BUDGET, usageRows, fitSteps, othersRows,
-  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, touchesChecklist, nodeHeight, isProjectSession, sortByUrgency, groupSessions, hoverInfo, svgAlertIcon, conversationDigest,
+  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, touchesChecklist, nodeHeight, isProjectSession, projectTag, sortByUrgency, groupSessions, hoverInfo, svgAlertIcon, conversationDigest,
 } from './lib.js'
 
 // ===== Tunables (edit here) =====
@@ -35,13 +35,16 @@ const AUTO_RENAME = true               // Set to false to turn auto-naming off
 const RENAME_AFTER_TURNS = 2 // The user asked for 2 (2026-10-20): 3 turns felt too long
 const TITLE_MAX = 6                   // Longest name in units; a name with a "-purpose" suffix may add SUFFIX_MAX more (user's rule, 2026-10-19: the noun for the thing, nothing else)
 const SUFFIX_MAX = 3
+const PROJECT_TAG_CHARS = 2              // Sessions started by the project system get "-<first N characters of the folder name>" (user's rule, 2026-10-21)
 const RENAME_MODEL = 'haiku'
 const RENAME_TOOL = 'mcp__ccd_session_mgmt__set_session_title' // Desktop's official rename tool (records the title source as "tool")
 const RENAMED_PREFIX = 'renamed:'      // $.store: sessions already auto-named (guarantees a single attempt, no retry on failure)
 const TASK_LABEL_MAX = 12            // Max length of the current-task summary (edit here)
 const NAME_RESERVED_CELLS = 16         // Cells taken on an other-session name line by ✕, the light and the right-hand time (approx.)
 const OWNS_PREFIX = 'checklist:'        // $.store: sessions that wrote a checklist file themselves (only those show it as their steps)
+const NODE_WRAP_MARGIN = 3            // Cells taken off the estimated text width so wrapped lines are not under-counted (2026-10-21: a 3-line note was drawn with a gap)
 const STEP_RESERVED_CELLS = 6          // Cells taken by the timeline node and gap to the left of a step's text
+const LINE_SIZE = { width: 280, height: 16 } // The divider and every session's progress bar are drawn at this exact size, so they are always the same length (user's request, 2026-10-23)
 const HOVER_BG = '#88888833'                 // Row background while the pointer is on any part of a session (translucent gray works in light and dark)
 const SECTION_GAP = 3                  // Blank lines between the current session and "other sessions" (shrinks first when space is tight)
 
@@ -341,7 +344,7 @@ async function adoptSessionId($) {
 /**
  * Auto-naming: after turn RENAME_AFTER_TURNS, pick a name of at most TITLE_MAX units from the conversation, exactly once (the marker is written before the call, so a failure is not retried).
  * How: prefer Desktop's official rename tool (the app code confirms the title source is recorded as "tool"); if it cannot be called, wait for the next submitted prompt and
- * set it via UserPromptSubmit's sessionTitle (works for terminal sessions; whether Desktop honours it is unverified). A manually renamed session (titleSource = user) and a session started by the project system are left alone, so the pane shows the same name as the project page.
+ * set it via UserPromptSubmit's sessionTitle (works for terminal sessions; whether Desktop honours it is unverified). A manually renamed session (titleSource = user) is left alone; a session started by the project system gets "-<project>" appended.
  */
 async function maybeRename($) {
   if (!AUTO_RENAME || !me.id) return
@@ -350,7 +353,7 @@ async function maybeRename($) {
   await $.store.set(RENAMED_PREFIX + me.id, { at: await $.clock.now() })
   me.titleCheckedAt = 0
   await refreshTitle($, await $.clock.now())
-  if (me.titleSource === 'user' || me.fromProject) return
+  if (me.titleSource === 'user') return
   const convo = conversationDigest(await $.session.messages()) // Uses the whole session, not just the last few messages
   const taken = await otherNames($)
   let title = ''
@@ -363,6 +366,11 @@ async function maybeRename($) {
     return
   }
   if (!title) return
+  // The project page's own name lives in the cloud and cannot be read, so a project session is named from its content plus which project it belongs to
+  if (me.fromProject) {
+    const tag = projectTag(me.cwd, PROJECT_TAG_CHARS)
+    if (tag && !title.endsWith('-' + tag)) title = title + '-' + tag
+  }
   try {
     // A missing tool throws; a rejection (e.g. permissions) returns deny / isError. Both count as failure and take the fallback
     const res = await $.tool.call({ tool: RENAME_TOOL, session_id: 'self', title })
@@ -452,9 +460,12 @@ async function readRateLimits($, now) {
 // ---------- Rendering (read-only) ----------
 
 /** Wrap the Svg in a keyed Box (Svg itself takes no key) so tests and redraws can identify it. */
-function svgBox(els, key, source, alt) {
+function svgBox(els, key, source, alt, size) {
   const { Box, Svg } = els
-  return Box({ key, children: [Svg({ source, alt })] })
+  // With a size the drawing keeps it: without one it is scaled down to whatever width its slot is squeezed to
+  return size
+    ? Box({ key, flexShrink: 0, children: [Svg({ source, alt, width: size.width, height: size.height })] })
+    : Box({ key, children: [Svg({ source, alt })] })
 }
 
 /**
@@ -471,9 +482,11 @@ function timelineRow(els, isDesktop, item, i, columns) {
   let marker
   if (isDesktop && els.Svg) {
     // The node is as tall as the text beside it, so the connector still reaches the next node when a title wraps
-    const cells = Math.max(8, (columns ?? 40) - STEP_RESERVED_CELLS)
+    // Estimate the text's lines on the narrow side: a node taller than its text only adds space, one shorter leaves a gap in the line
+    const cells = Math.max(8, (columns ?? 40) - STEP_RESERVED_CELLS - NODE_WRAP_MARGIN)
     const lines = wrapByWidth(title, cells).length + (note ? wrapByWidth(note, cells).length : 0)
-    marker = svgBox(els, 'node-' + i, svgTimelineNode(item.kind, item.label, item.top, item.bottom, nodeHeight(lines)), title)
+    const height = nodeHeight(lines)
+    marker = svgBox(els, 'node-' + i, svgTimelineNode(item.kind, item.label, item.top, item.bottom, height), title, { width: 28, height })
   } else {
     const icon = { done: '✓', collapsed: '✓', running: '●', warn: '!', bad: '!', todo: '○', more: '┆' }[item.kind] ?? '○'
     const color = { done: 'green', collapsed: 'green', running: 'cyan', warn: 'yellow', bad: 'red' }[item.kind]
@@ -528,7 +541,7 @@ async function currentSection($, els, isDesktop, now, maxRows, columns) {
 
 /** Section divider: a thick solid line with "other sessions" embedded in the middle (Svg on Desktop, ━ in the terminal). */
 function sectionDivider(els, isDesktop, columns) {
-  if (isDesktop && els.Svg) return svgBox(els, 'section-divider', svgSectionDivider(t('othersTitle')), t('othersTitle'))
+  if (isDesktop && els.Svg) return svgBox(els, 'section-divider', svgSectionDivider(t('othersTitle'), LINE_SIZE.width), t('othersTitle'), LINE_SIZE)
   const side = '━'.repeat(Math.max(2, Math.floor(((columns ?? 40) - t('othersTitle').length - 4) / 2)))
   return els.Text({ key: 'section-divider', dimColor: true, wrap: 'truncate-end', children: [side + ' ' + t('othersTitle') + ' ' + side] })
 }
@@ -567,7 +580,7 @@ function otherRow($, els, isDesktop, s, now, columns) {
   })
   // The progress bar extends almost to the right edge (same width as the usage bars); the terminal uses a text bar sized to the pane width
   const line2 = isDesktop && els.Svg
-    ? svgBox(els, 'line2-' + s.id, svgOtherLine(pct), pct === null ? s.name : s.name + ' ' + pct + '%')
+    ? svgBox(els, 'line2-' + s.id, svgOtherLine(pct, LINE_SIZE.width), pct === null ? s.name : s.name + ' ' + pct + '%', LINE_SIZE)
     : Text({ key: 'line2-' + s.id, color: 'cyan', children: [pct === null ? ' ' : thinBar(pct, Math.max(8, (columns ?? 40) - 4))] })
   const info = hoverInfo(s)
   const infoText = info ? t(info.kind === 'stuck' ? 'hoverStuck' : info.kind === 'doing' ? 'hoverDoing' : 'hoverDone', info.text) : null

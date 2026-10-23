@@ -65,6 +65,11 @@ export function usageSegments(rateLimits, nowMs) {
 }
 
 /** The last path segment is the project name (handles both / and \). */
+/** Tag that marks which project a project-system session belongs to: the first `chars` characters of its folder name. */
+export function projectTag(cwd, chars = 2) {
+  return [...folderName(cwd)].slice(0, chars).join('')
+}
+
 export function folderName(cwd) {
   const parts = String(cwd ?? '').split(/[\\/]+/).filter(Boolean)
   return parts.length ? parts[parts.length - 1] : String(cwd ?? '')
@@ -353,7 +358,8 @@ const DESKTOP_ID = /^local_[A-Za-z0-9-]{1,64}$/
 
 /** Builds a jump link for a Desktop session id; returns null when the id format is invalid. */
 export function jumpUrl(desktopId) {
-  return DESKTOP_ID.test(String(desktopId ?? '')) ? 'claude://code/continue?session=' + desktopId : null
+  // Same form as the link the desktop app gives for a session (2026-10-21); the older claude://code/continue?session= form switched noticeably slower
+  return DESKTOP_ID.test(String(desktopId ?? '')) ? 'claude://claude.ai/epitaxy/' + desktopId : null
 }
 
 /** Whether a Desktop session record (%APPDATA%\Claude\claude-code-sessions\…\local_*.json) belongs to this Claude Code session. */

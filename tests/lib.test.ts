@@ -5,7 +5,7 @@ import { setLang } from '../hooks/i18n.js'
 // English is the default UI language; set it explicitly so the suite does not depend on test order
 setLang('en')
 import {
-  isProjectSession, ago, bar, currentStepLabel, desktopRecordMatches, estimateRemainingMin, etaText, folderName, formatElapsed,
+  isProjectSession, projectTag, ago, bar, currentStepLabel, desktopRecordMatches, estimateRemainingMin, etaText, folderName, formatElapsed,
   jumpUrl, limitColor, liveSessions, mergeProgress, othersRows, parseTaskSteps, pushAction, relativeReset, rightTime,
   safeText, actionLabel, showActivity, splitHidden, statusOf, stepStats, summarizeBackground, svgOtherLine,
   svgSectionDivider, svgThinBar, svgTimelineNode, tasksPath, thinBar, titleFromTranscript, usageRows, usageSegments,
@@ -182,7 +182,7 @@ test('name cleanup and length units: quotes and punctuation stripped, a CJK char
 })
 
 test('jump links, Desktop records, names, paths, lists, hiding', () => {
-  expect(jumpUrl('local_2f5f-db89')).toBe('claude://code/continue?session=local_2f5f-db89')
+  expect(jumpUrl('local_2f5f-db89')).toBe('claude://claude.ai/epitaxy/local_2f5f-db89')
   expect(jumpUrl('local_x&rm')).toBe(null)
   expect(desktopRecordMatches({ cliSessionId: 'b', priorCliSessionIds: ['a'] }, 'a')).toBe(true)
   expect(titleFromTranscript('{"type":"ai-title","aiTitle":"A"}\n{"type":"custom-title","customTitle":"B"}')).toBe('B')
@@ -236,4 +236,10 @@ test('isProjectSession: the project system\'s title, now or in previousTitles, m
   expect(isProjectSession({ title: 'Backtest progress', previousTitles: ['Remote Control session (from a project)'] })).toBe(true)
   expect(isProjectSession({ title: 'Backtest progress', previousTitles: ['Old name'] })).toBe(false)
   expect(isProjectSession(null)).toBe(false)
+})
+
+test('projectTag: the first 2 characters of the folder name', () => {
+  expect(projectTag('C:\\work\\Strategy room')).toBe('St')
+  expect(projectTag('C:\\work\\策略討論區')).toBe('策略')
+  expect(projectTag('/home/a/x')).toBe('x')
 })
