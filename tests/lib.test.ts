@@ -5,7 +5,7 @@ import { setLang } from '../hooks/i18n.js'
 // English is the default UI language; set it explicitly so the suite does not depend on test order
 setLang('en')
 import {
-  isProjectSession, projectTag, ago, bar, currentStepLabel, desktopRecordMatches, estimateRemainingMin, etaText, folderName, formatElapsed,
+  isProjectSession, projectTag, clientRowMode, ago, bar, currentStepLabel, desktopRecordMatches, estimateRemainingMin, etaText, folderName, formatElapsed,
   jumpUrl, limitColor, liveSessions, mergeProgress, othersRows, parseTaskSteps, pushAction, relativeReset, rightTime,
   safeText, actionLabel, showActivity, splitHidden, statusOf, stepStats, summarizeBackground, svgOtherLine,
   svgSectionDivider, svgThinBar, svgTimelineNode, tasksPath, thinBar, titleFromTranscript, usageRows, usageSegments,
@@ -242,4 +242,13 @@ test('projectTag: the first 2 characters of the folder name', () => {
   expect(projectTag('C:\\work\\Strategy room')).toBe('St')
   expect(projectTag('C:\\work\\策略討論區')).toBe('策略')
   expect(projectTag('/home/a/x')).toBe('x')
+})
+
+test('clientRowMode: regions while the first one may still start, for good once one reports it runs, plain rows after the grace otherwise', () => {
+  const grace = 12000
+  expect(clientRowMode({ supported: true, ready: false, firstDrawAt: null }, 0, grace)).toBe(true)
+  expect(clientRowMode({ supported: true, ready: false, firstDrawAt: 1000 }, 12999, grace)).toBe(true)
+  expect(clientRowMode({ supported: true, ready: false, firstDrawAt: 1000 }, 13000, grace)).toBe(false) // never started: fall back
+  expect(clientRowMode({ supported: true, ready: true, firstDrawAt: 1000 }, 99999, grace)).toBe(true)
+  expect(clientRowMode({ supported: false, ready: true, firstDrawAt: null }, 0, grace)).toBe(false)
 })

@@ -9,7 +9,7 @@ import {
   desktopRecordMatches, currentStepLabel, splitHidden, COLORS, ago,
   actionLabel, pushAction, showActivity, summarizeBackground,
   ROWS, FALLBACK_BUDGET, usageRows, fitSteps, othersRows,
-  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, touchesChecklist, nodeHeight, isProjectSession, projectTag, sortByUrgency, groupSessions, hoverInfo, svgAlertIcon, conversationDigest,
+  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, touchesChecklist, nodeHeight, isProjectSession, projectTag, clientRowMode, sortByUrgency, groupSessions, hoverInfo, svgAlertIcon, conversationDigest,
 } from './lib.js'
 
 // ===== Tunables (edit here) =====
@@ -44,7 +44,9 @@ const NAME_RESERVED_CELLS = 16         // Cells taken on an other-session name l
 const OWNS_PREFIX = 'checklist:'        // $.store: sessions that wrote a checklist file themselves (only those show it as their steps)
 const NODE_WRAP_MARGIN = 3            // Cells taken off the estimated text width so wrapped lines are not under-counted (2026-10-21: a 3-line note was drawn with a gap)
 const STEP_RESERVED_CELLS = 6          // Cells taken by the timeline node and gap to the left of a step's text
-const LINE_SIZE = { width: 280, height: 16 } // The divider and every session's progress bar are drawn at this exact size, so they are always the same length (user's request, 2026-10-23)
+const CLICK_LOG_KEY = 'click-log'           // Last clicks on session blocks, kept so a real click in the app can be checked afterwards
+const CLICK_LOG_MAX = 20
+const CLIENT_GRACE_MS = 12000              // How long a session block may take to report that its region runs before plain rows are drawn instead (the app gives up on a region after 10 s)
 const HOVER_BG = '#88888833'                 // Row background while the pointer is on any part of a session (translucent gray works in light and dark)
 const SECTION_GAP = 3                  // Blank lines between the current session and "other sessions" (shrinks first when space is tight)
 
@@ -541,7 +543,7 @@ async function currentSection($, els, isDesktop, now, maxRows, columns) {
 
 /** Section divider: a thick solid line with "other sessions" embedded in the middle (Svg on Desktop, ━ in the terminal). */
 function sectionDivider(els, isDesktop, columns) {
-  if (isDesktop && els.Svg) return svgBox(els, 'section-divider', svgSectionDivider(t('othersTitle'), LINE_SIZE.width), t('othersTitle'), LINE_SIZE)
+  if (isDesktop && els.Svg) return svgBox(els, 'section-divider', svgSectionDivider(t('othersTitle')), t('othersTitle'))
   const side = '━'.repeat(Math.max(2, Math.floor(((columns ?? 40) - t('othersTitle').length - 4) / 2)))
   return els.Text({ key: 'section-divider', dimColor: true, wrap: 'truncate-end', children: [side + ' ' + t('othersTitle') + ' ' + side] })
 }
@@ -560,6 +562,7 @@ function otherRow($, els, isDesktop, s, now, columns) {
   const status = statusOf(s)
   const url = jumpUrl(s.desktopId)
   const hide = Button({ key: 'hide-' + s.id, label: '✕', plain: true, dimColor: true, onPress: () => hideProject($, s.id) })
+  if (isDesktop && els.Client && url && useClientRows($, now)) return clientRow(els, s, now, status, pct, url, hide)
   // Severe problems use a red triangle icon (⚠ in the terminal); other statuses use a light dot
   const dot = status === 'bad'
     ? (isDesktop && els.Svg ? svgBox(els, 'alert-' + s.id, svgAlertIcon(), t('severeAlt')) : Text({ key: 'light-' + s.id, color: 'red', children: ['⚠'] }))
@@ -580,7 +583,7 @@ function otherRow($, els, isDesktop, s, now, columns) {
   })
   // The progress bar extends almost to the right edge (same width as the usage bars); the terminal uses a text bar sized to the pane width
   const line2 = isDesktop && els.Svg
-    ? svgBox(els, 'line2-' + s.id, svgOtherLine(pct, LINE_SIZE.width), pct === null ? s.name : s.name + ' ' + pct + '%', LINE_SIZE)
+    ? svgBox(els, 'line2-' + s.id, svgOtherLine(pct), pct === null ? s.name : s.name + ' ' + pct + '%')
     : Text({ key: 'line2-' + s.id, color: 'cyan', children: [pct === null ? ' ' : thinBar(pct, Math.max(8, (columns ?? 40) - 4))] })
   const info = hoverInfo(s)
   const infoText = info ? t(info.kind === 'stuck' ? 'hoverStuck' : info.kind === 'doing' ? 'hoverDoing' : 'hoverDone', info.text) : null
@@ -590,6 +593,57 @@ function otherRow($, els, isDesktop, s, now, columns) {
   return Box({ key: 'proj-' + s.id, flexDirection: 'column', children: [
     Box({ flexDirection: 'column', hover: { backgroundColor: HOVER_BG }, children: [line1, line2, hoverLine].filter(Boolean) }),
   ] })
+}
+
+/** Desktop: the whole block (name, bar, time) is one Client region (hooks/row.js), so a click anywhere on it jumps and the hover background is one piece. ✕ stays outside so untracking never jumps. */
+function clientRow(els, s, now, status, pct, url, hide) {
+  const { Box, Client } = els
+  rowTargets.set(s.id, { url, name: s.name })
+  const info = hoverInfo(s)
+  return Box({ key: 'proj-' + s.id, flexDirection: 'row', columnGap: 1, alignItems: 'flex-start', children: [
+    hide,
+    // The region takes the room left beside ✕ and never more: sized by its content it pushed the whole pane wider than the window
+    Box({ flexGrow: 1, flexShrink: 1, minWidth: 0, overflow: 'hidden', children: [Client({ key: 'jump-' + s.id, module: './row.js', width: '100%', props: {
+      name: s.name,
+      glyph: status === 'bad' ? '▲' : status === 'idle' ? '○' : '●',
+      light: LIGHT[status],
+      right: [pct === null ? '' : pct + '%', rightTime(s, now)].filter(Boolean).join(' · '),
+      pct,
+      barColor: COLORS.running,
+      track: COLORS.track,
+      info: info ? t(info.kind === 'stuck' ? 'hoverStuck' : info.kind === 'doing' ? 'hoverDoing' : 'hoverDone', info.text) : null,
+      hoverBg: HOVER_BG,
+      jumpingLabel: t('jumping'),
+    } })] }),
+  ] })
+}
+
+/** Whether the Client regions work in this pane; module state, reset on each load. */
+const clientProbe = { supported: true, ready: false, firstDrawAt: null }
+
+function useClientRows($, now) {
+  if (!clientRowMode(clientProbe, now, CLIENT_GRACE_MS)) return false
+  if (clientProbe.firstDrawAt === null && !clientProbe.ready) {
+    clientProbe.firstDrawAt = now
+    // Draw again once the grace is over, so a region that never started is replaced by plain rows without waiting for other changes
+    $.clock.after(CLIENT_GRACE_MS + 100, () => { if (!clientProbe.ready) $.ui.invalidate('ui.render') })
+  }
+  return true
+}
+
+/** Where each drawn block jumps to, filled while drawing; a click only sends the block's key, so the link never comes from the click itself. */
+const rowTargets = new Map()
+
+/** A click on a session block (hooks/row.js): log it, then jump. */
+async function onRowMessage($, e) {
+  const id = String(e.element).replace(/^jump-/, '')
+  const target = rowTargets.get(id)
+  if (!target || !e.data || e.data.jump !== true) return
+  try {
+    const log = (await $.store.get(CLICK_LOG_KEY)) ?? []
+    await $.store.set(CLICK_LOG_KEY, [...log, { at: await $.clock.now(), id, name: target.name }].slice(-CLICK_LOG_MAX))
+  } catch {}
+  await jumpTo($, target.url, target.name)
 }
 
 /** The time on the right of a row: a button too when the session can be jumped to, so the whole row is clickable. */
@@ -805,6 +859,13 @@ export function register(on) {
     return next(e)
   })
 
+  on('ui.message', async ($, e, next) => {
+    if (e.module !== './row.js' && !String(e.module).endsWith('row.js')) return next(e)
+    if (e.data && e.data.ready === true) { clientProbe.ready = true; return {} }
+    await onRowMessage($, e)
+    return {}
+  })
+
   // The terminal uses /dashboard; Desktop's / menu does not list mod commands, so the button above the prompt is used instead
   on('command.run', { command: 'dashboard' }, async ($) => {
     await openPane($, true)
@@ -826,6 +887,7 @@ export function register(on) {
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE_ID) return next(e)
     const els = $.ui.resolve(e)
+    rowTargets.clear() // only the blocks drawn this time can be clicked
     const { Box, Text } = els
     const isDesktop = e.surface !== 'terminal'
     const now = await $.clock.now()

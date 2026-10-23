@@ -66,6 +66,16 @@ export function usageSegments(rateLimits, nowMs) {
 
 /** The last path segment is the project name (handles both / and \). */
 /** Tag that marks which project a project-system session belongs to: the first `chars` characters of its folder name. */
+/**
+ * Whether other sessions are drawn as Client regions: yes once one has reported it runs; yes while the first one is still within `graceMs` of being drawn;
+ * no after that (the desktop app's region runtime never started, so plain rows are drawn instead), and no when the surface has no Client at all.
+ */
+export function clientRowMode(probe, now, graceMs) {
+  if (!probe.supported) return false
+  if (probe.ready) return true
+  return probe.firstDrawAt === null || now - probe.firstDrawAt < graceMs
+}
+
 export function projectTag(cwd, chars = 2) {
   return [...folderName(cwd)].slice(0, chars).join('')
 }

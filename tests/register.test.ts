@@ -18,6 +18,11 @@ const BAND = {
   viewport: { columns: 160, rows: 40 },
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 110, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
+const rowProps = async (ui: any, id: string) => ((await ui.find({ key: 'jump-' + id })) as any)?.props.props
+const click = async (ui: any, id: string, x: number, y: number) => {
+  await ui.pointer({ type: 'down', x, y, button: 'left', in: 'jump-' + id })
+  await ui.pointer({ type: 'up', x, y, button: 'left', in: 'jump-' + id })
+}
 const pane = (bodyRows: number, surface: 'desktop' | 'terminal' = 'desktop') => ({ ...PANE, surface, props: { ...PANE.props, scroll: { offset: 0, bodyRows } } })
 
 type Opts = {
@@ -223,20 +228,26 @@ test('other sessions: ✕ comes first, light colors, only the time on the right,
   const clock = stubEngine(on, saved)
   await start($, clock)
   const ui = await $.ui.mount(pane(30))
-  // The light is the 2nd element on the left of the name line (a Text key cannot be used with find)
-  const light = async (id: string) => ((await ui.find({ key: 'proj-' + id })) as any)?.children[0].children[0].children[0].children[1].props.color
+  const light = async (id: string) => (await rowProps(ui, id))?.light
   expect([await light('w'), await light('u'), await light('i')]).toEqual(['#0088b0', '#e07a10', '#77756f']) // blue working, orange finished-unread, gray hollow seen (there is no green light)
-  const alert = await svgOf(ui, 'alert-x') // severe problem: red-outlined triangle with an exclamation mark, replacing the dot
-  expect(alert).toContain('stroke="#c8222b"')
-  expect(alert).toContain('<path')
-  const line1 = ((await ui.find({ key: 'proj-w' })) as any).children[0].children[0]
-  const left = line1.children[0].children
-  expect([left[0].props.key, left[1].type, left[1].children[0], left[2].children[0].props.key]).toEqual(['hide-w', 'Text', '●', 'jump-w']) // ✕ → light → name
-  const timeOf = async (id: string) => ((await ui.find({ key: 'jump-' + id + '-time' })) as any)?.props.label
-  expect([await timeOf('w'), await timeOf('u'), await timeOf('i')]).toEqual(['75% · ~18m', '5m ago', '2h 5m ago']) // the percentage sits on the first line, right side, and is clickable
+  expect([(await rowProps(ui, 'x')).glyph, await light('x')]).toEqual(['▲', '#c8222b']) // severe problem: red triangle instead of the dot
+  expect([(await rowProps(ui, 'w')).glyph, (await rowProps(ui, 'i')).glyph]).toEqual(['●', '○'])
+  const row = (await ui.find({ key: 'proj-w' })) as any
+  expect([row.children[0].props.key, row.children[1].children[0].type, row.children[1].children[0].props.key]).toEqual(['hide-w', 'Client', 'jump-w']) // ✕ first, then the clickable block
+  expect([row.children[1].props.minWidth, row.children[1].props.overflow, row.children[1].children[0].props.width]).toEqual([0, 'hidden', '100%']) // the block fills the room left and never widens the pane
+  const timeOf = async (id: string) => (await rowProps(ui, id))?.right
+  expect([await timeOf('w'), await timeOf('u'), await timeOf('i')]).toEqual(['75% · ~18m', '5m ago', '2h 5m ago']) // the percentage sits on the first line, right side
   expect(await ui.find({ type: 'Text', text: /Working ·|Idle ·|· background|In progress…|Done · unread|Current:/ })).toBeUndefined()
-  expect(await svgOf(ui, 'line2-w')).toContain('width="210" height="4"') // the bar is stretched: 75% of 280px
-  expect(await svgOf(ui, 'line2-u')).not.toContain('<rect') // no steps, no progress bar
+  for (const id of ['w', 'u', 'i', 'x']) expect(await ui.find({ in: 'jump-' + id, type: 'Text', text: /Working ·|Idle ·|· background|In progress…|Done · unread|Current:/ })).toBeUndefined()
+  // The bar: thin line glyphs across the block's width, 75% in blue, the rest as the faint track
+  await ui.resize({ columns: 40, rows: 2, in: 'jump-w' })
+  const bar = ((await ui.findAll({ in: 'jump-w', type: 'Text', text: /^━+$/ })) as any[]).filter((x) => x.props.color).map((x) => [x.text.length, x.props.color])
+  expect(bar).toEqual([[26, '#0088b0'], [8, '#8883']]) // 85% of the 40 cells, so a glyph drawn a little wide never pushes it onto a second line
+  const line = ((await ui.findAll({ in: 'jump-w', type: 'Text' })) as any[]).find((x) => x.text === '━'.repeat(34))
+  expect(line?.props.wrap).toBe('truncate-end') // one line holding both parts; anything too long is cut at its right end, never wrapped
+  await ui.resize({ columns: 20, rows: 2, in: 'jump-w' })
+  expect(((await ui.findAll({ in: 'jump-w', type: 'Text', text: /^━+$/ })) as any[]).filter((x) => x.props.color).map((x) => x.text.length)).toEqual([13, 4]) // follows the block's width
+  expect(await ui.find({ in: 'jump-u', type: 'Text', text: /━/ })).toBeUndefined() // no steps, no progress bar
 })
 
 test('idle time uses the work end time, not the heartbeat time (no permanent "just now")', async ($, on) => {
@@ -245,7 +256,8 @@ test('idle time uses the work end time, not the heartbeat time (no permanent "ju
   const clock = stubEngine(on, saved)
   await start($, clock)
   const ui = await $.ui.mount(pane(30))
-  expect(((await ui.find({ key: 'jump-o-time' })) as any)?.props.label).toBe('40m ago')
+  expect((await rowProps(ui, 'o'))?.right).toBe('40m ago')
+  expect(await ui.find({ in: 'jump-o', type: 'Text', text: '40m ago' })).toBeDefined()
 })
 
 test('finished unread: finishing while another session is the one being viewed records the finish time as unseen', async ($, on) => {
@@ -286,8 +298,8 @@ test('another session with background work shows a blue light and no status text
   const clock = stubEngine(on, saved)
   await start($, clock)
   const ui = await $.ui.mount(pane(30))
-  expect(((await ui.find({ key: 'proj-o' })) as any)?.children[0].children[0].children[0].children[1].props.color).toBe('#0088b0')
-  expect(await ui.find({ type: 'Text', text: /background|Run benchmark/i })).toBeUndefined()
+  expect((await rowProps(ui, 'o'))?.light).toBe('#0088b0')
+  expect(await ui.find({ in: 'jump-o', type: 'Text', text: /background|Run benchmark/i })).toBeUndefined()
 })
 
 test('pressing a name jumps to that session; without a Desktop id there is no button', async ($, on) => {
@@ -299,8 +311,11 @@ test('pressing a name jumps to that session; without a Desktop id there is no bu
   await start($, clock)
   const ui = await $.ui.mount(pane(30))
   expect(await ui.find({ key: 'jump-t' })).toBeUndefined()
-  await ui.press({ key: 'jump-o' })
+  await ui.post({ other: true }, { in: 'jump-o' })
+  expect(runs).toEqual([]) // only a click message jumps
+  await click(ui, 'o', 2, 0)
   expect(runs).toEqual([['rundll32.exe', 'url.dll,FileProtocolHandler', 'claude://claude.ai/epitaxy/local_o-0002']])
+  expect(saved.get('click-log')).toEqual([{ at: NOW, id: 'o', name: (await rowProps(ui, 'o')).name }]) // each real click is logged, so a click in the app can be checked afterwards
 })
 
 // ---------- Dividers ----------
@@ -376,7 +391,7 @@ test('single page: at 24 and 30 rows nothing overflows, usage is always there, �
       expect({ rows, surface, est: Math.min(estimateRows(root), rows), height: root.props.height }).toEqual({ rows, surface, est: estimateRows(root), height: rows })
       expect(await ui.find({ type: 'Text', text: 'Session limit' })).toBeDefined() // compact when the pane is short, but still there
       const firstProj = (await ui.find({ key: 'proj-o0' })) as any
-      if (firstProj) expect(firstProj.children[0].children[0].children[0].children[0].props.key).toBe('hide-o0')
+      if (firstProj) expect((surface === 'desktop' ? firstProj.children[0] : firstProj.children[0].children[0].children[0].children[0]).props.key).toBe('hide-o0')
       await ui.unmount()
     }
   }
@@ -535,9 +550,9 @@ test('long text wraps: task, step titles and notes all use wrap; a long other-se
   const ui = await $.ui.mount({ ...pane(40), props: { ...pane(40).props, bodyColumns: 40 } })
   const texts = (await ui.findAll({ type: 'Text' })) as any[]
   expect(texts.filter((t) => t.props.wrap === 'truncate-end' && !/^$|ago$|^~|%/.test(String(t.children[0] ?? ''))).map((t) => t.children[0])).toEqual([])
-  const parts = ((await ui.findAll({ type: 'Button' })) as any[]).filter((b) => String(b.props.key).startsWith('jump-o1') && !/-time$/.test(String(b.props.key)))
-  expect(parts.length).toBeGreaterThan(1)
-  expect(parts.map((b) => b.props.label).join('')).toBe(long)
+  // Desktop: the whole name sits in the clickable block and wraps there (no splitting into buttons any more)
+  expect((await rowProps(ui, 'o1')).name).toBe(long)
+  expect(((await ui.find({ in: 'jump-o1', type: 'Text', text: long })) as any)?.props.wrap).toBe('wrap')
 })
 
 // ---------- Spacing, continuous timeline, auto-naming ----------
@@ -709,12 +724,22 @@ test('whole row: one hover scope with a background, the name lines and the time 
   const clock = stubEngine(on, saved, { runs })
   await start($, clock)
   const ui = await $.ui.mount({ ...pane(30), props: { ...pane(30).props, bodyColumns: 30 } })
-  const row = (await ui.find({ key: 'proj-o' })) as any
-  expect(row.children[0].hover?.backgroundColor).toBeTruthy() // the Box filling the row lights while the pointer is anywhere on it
-  const presses = ['jump-o', 'jump-o-1', 'jump-o-time']
-  for (const key of presses) await ui.press({ key })
-  expect(runs.length).toBe(3)
+  await ui.resize({ columns: 26, rows: 3, in: 'jump-o' })
+  const bg = async () => ((await ui.drawn({ in: 'jump-o' })) as any).props.backgroundColor
+  expect(await bg()).toBeUndefined()
+  await ui.pointer({ type: 'enter', x: 5, y: 0, in: 'jump-o' })
+  expect(await bg()).toBe('#88888833') // the whole block lights as one piece
+  // name (line 1, left), name's 2nd line, the time (line 1, right), the bar (last line): every part jumps (each after the previous switch has settled)
+  for (const [x, y] of [[1, 0], [3, 1], [24, 0], [10, 2]]) { await click(ui, 'o', x, y); await ui.advance(8000) }
+  expect(runs.length).toBe(4)
   expect(runs.every((r) => String(r[2]).endsWith('/epitaxy/local_o-1'))).toBe(true)
+  // pressed, then released outside the block: cancelled like a normal button
+  await ui.pointer({ type: 'down', x: 3, y: 0, button: 'left', in: 'jump-o' })
+  await ui.pointer({ type: 'up', x: 40, y: 0, button: 'left', in: 'jump-o' })
+  await ui.pointer({ type: 'up', x: 3, y: 0, button: 'right', in: 'jump-o' })
+  expect(runs.length).toBe(4)
+  await ui.press({ key: 'hide-o' }) // ✕ sits outside the block, so untracking never jumps
+  expect(runs.length).toBe(4)
 })
 
 test('hover line: hidden until the pointer is on the row; says what needs the user, what is being done, or what was done', async ($, on) => {
@@ -726,16 +751,15 @@ test('hover line: hidden until the pointer is on the row; says what needs the us
   const clock = stubEngine(on, saved)
   await start($, clock)
   const ui = await $.ui.mount(pane(40))
-  // The hover line is the last child of the row Box (it has no key of its own: a keyed Box would be its own hover scope)
-  const line = async (id: string) => { const row = ((await ui.find({ key: 'proj-' + id })) as any).children[0]; const last = row.children[row.children.length - 1]; return last?.props?.display === 'none' ? last : undefined }
-  for (const id of ['x', 'w', 'd']) {
-    expect((await line(id)).props.display).toBe('none')
-    expect((await line(id)).hover ?? (await line(id)).props.hover).toEqual({ display: 'flex' })
+  const lines: Record<string, string> = { x: 'Needs you: Pick a test period', w: 'Doing: Filter rules', d: 'Done: Ranking page' }
+  for (const [id, text] of Object.entries(lines)) {
+    expect(await ui.find({ in: 'jump-' + id, type: 'Text', text })).toBeUndefined() // hidden at rest
+    await ui.pointer({ type: 'enter', x: 2, y: 0, in: 'jump-' + id })
+    expect(await ui.find({ in: 'jump-' + id, type: 'Text', text })).toBeDefined() // shown while the pointer is on the block
+    await ui.pointer({ type: 'leave', x: 2, y: 0, in: 'jump-' + id })
+    expect(await ui.find({ in: 'jump-' + id, type: 'Text', text })).toBeUndefined()
   }
-  expect((await line('x')).children[0].children[0]).toBe('Needs you: Pick a test period')
-  expect((await line('w')).children[0].children[0]).toBe('Doing: Filter rules')
-  expect((await line('d')).children[0].children[0]).toBe('Done: Ranking page')
-  expect(await line('n')).toBeUndefined() // nothing to say, no line
+  expect((await rowProps(ui, 'n')).info).toBeNull() // nothing to say, no line
 })
 
 test('order: needs-you first, then finished-unseen, then working, then seen; most recently active first within a level', async ($, on) => {
@@ -892,21 +916,49 @@ test('a step that wraps onto several lines gets a taller timeline node; the time
   const node0 = (await ui.find({ key: 'node-0' })) as any
   expect(node0.props.flexShrink).toBe(0)
   expect(node0.children[0].props.height).toBe(heightOf(await svgOf(ui, 'node-0')))
-  const right = ((await ui.find({ key: 'proj-o1' })) as any).children[0].children[0].children[1]
-  expect(right.props.flexShrink).toBe(0)
-  expect(right.children[0].props.key).toBe('jump-o1-time') // a button: its label never wraps
+  const right = (await rowProps(ui, 'o1')).right
+  expect(((await ui.find({ in: 'jump-o1', type: 'Text', text: right })) as any)?.props.wrap).toBe('truncate-end') // the time stays on one line
 })
 
-test('the progress bar is exactly as long as the "Other sessions" divider, and neither stretches with the pane', async ($, on) => {
+test('switching feedback: a click shows "Switching…" at once, more clicks meanwhile do not jump again, and it clears after 8 s', async ($, on) => {
   const saved = new Map<string, unknown>()
-  saved.set('session:w', other({ id: 'w', name: 'Busy', desktopId: 'local_w-1', stats: { done: 1, total: 2, pct: 50 } }))
-  const clock = stubEngine(on, saved)
+  saved.set('session:o', other({ id: 'o', name: 'Docs', desktopId: 'local_o-1', finishedAt: NOW - 5 * MIN }))
+  const runs: any[] = []
+  const clock = stubEngine(on, saved, { runs })
   await start($, clock)
-  for (const cols of [30, 120]) {
-    const ui = await $.ui.mount({ ...pane(30), props: { ...pane(30).props, bodyColumns: cols } })
-    const size = async (key: string) => { const n = (await ui.find({ key })) as any; return [n.props.flexShrink, n.children[0].props.width, n.children[0].props.height] }
-    expect(await size('line2-w')).toEqual([0, 280, 16])
-    expect(await size('section-divider')).toEqual([0, 280, 16])
-    await ui.unmount()
-  }
+  const ui = await $.ui.mount(pane(30))
+  await ui.resize({ columns: 30, rows: 2, in: 'jump-o' })
+  const label = async () => !!(await ui.find({ in: 'jump-o', type: 'Text', text: '↗ Switching…' }))
+  expect(await label()).toBe(false)
+  await click(ui, 'o', 2, 0)
+  expect(await label()).toBe(true) // drawn by the block itself, no wait
+  expect(((await ui.drawn({ in: 'jump-o' })) as any).props.backgroundColor).toBe('#88888833') // stays lit while switching
+  await click(ui, 'o', 2, 0)
+  await click(ui, 'o', 5, 1)
+  expect(runs.length).toBe(1) // impatient extra clicks do not send the link again
+  await ui.pointer({ type: 'enter', x: 2, y: 0, in: 'jump-o' })
+  await ui.pointer({ type: 'leave', x: 2, y: 0, in: 'jump-o' })
+  expect(await label()).toBe(true) // moving the pointer in and out does not drop "Switching…"
+  await ui.advance(7000)
+  expect(await label()).toBe(true)
+  await ui.advance(1000)
+  expect(await label()).toBe(false)
+  expect(await ui.find({ in: 'jump-o', type: 'Text', text: '5m ago' })).toBeDefined() // the time is back
+  await click(ui, 'o', 2, 0)
+  expect(runs.length).toBe(2) // and it can be clicked again
+})
+
+test('a block reports once that its region runs, and a ready report never jumps', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  saved.set('session:o', other({ id: 'o', name: 'Docs', desktopId: 'local_o-1', finishedAt: NOW - 5 * MIN }))
+  const runs: any[] = []
+  const clock = stubEngine(on, saved, { runs })
+  await start($, clock)
+  const ui = await $.ui.mount(pane(30))
+  expect(((await ui.drawn({ in: 'jump-o' })) as any).type).toBe('Box') // the region drew, and on its first draw reported itself ready (not a click)
+  expect(runs).toEqual([])
+  expect(saved.get('click-log')).toBeUndefined()
+  await clock.advance(13000)
+  await clock.settle()
+  expect(((await ui.find({ key: 'jump-o' })) as any)?.type).toBe('Client') // it reported in, so it stays a region after the grace
 })
