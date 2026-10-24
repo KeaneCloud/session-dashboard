@@ -71,7 +71,7 @@ export function usageSegments(rateLimits, nowMs) {
  * no after that (the desktop app's region runtime never started, so plain rows are drawn instead), and no when the surface has no Client at all.
  */
 export function clientRowMode(probe, now, graceMs) {
-  if (!probe.supported) return false
+  if (!probe.supported || probe.failed) return false
   if (probe.ready) return true
   return probe.firstDrawAt === null || now - probe.firstDrawAt < graceMs
 }
@@ -163,6 +163,25 @@ export function mergeProgress(prev, input, nowMs) {
     updatedAt: nowMs,
     steps,
   }
+}
+
+const TODO_STATUS = { completed: 'done', in_progress: 'running', pending: 'todo' }
+
+/**
+ * Built-in todo list (TodoWrite: [{ content, status }]) → progress-tool input, so the pane follows the todos without a separate report.
+ * The todo list has no "needs you" state: a step the progress tool marked warn/bad keeps that mark (and note) until the todo is completed.
+ */
+export function todosToInput(todos, prevSteps) {
+  const flagged = new Map((prevSteps ?? []).filter((s) => s.status === 'warn' || s.status === 'bad').map((s) => [s.title, s]))
+  const steps = (Array.isArray(todos) ? todos : [])
+    .filter((td) => td && typeof td.content === 'string' && td.content.trim() !== '')
+    .map((td) => {
+      const title = td.content.trim()
+      const status = TODO_STATUS[td.status] ?? 'todo'
+      const mark = status !== 'done' ? flagged.get(title) : undefined
+      return mark ? { title, status: mark.status, note: mark.note } : { title, status }
+    })
+  return { steps }
 }
 
 /**
@@ -290,11 +309,11 @@ export function thinBar(pct, width = BAR_WIDTH) {
 // Colors (edit here)
 export const COLORS = { done: '#2f8f4e', warn: '#e07a10', bad: '#c8222b', running: '#0088b0', todo: '#a9a5a3', track: '#8883', line: '#8885' }
 export const LIMIT_WARN_PCT = 80  // Usage >= this value turns the bar orange
-export const LIMIT_BAD_PCT = 95   // Usage >= this value turns the bar red
+export const LIMIT_BAD_PCT = 85   // Usage above this value turns the bar red (user's request, 2026-10-24)
 
 /** Usage bar color: blue normally, orange when high, red when nearly full. */
 export function limitColor(pct) {
-  if (pct >= LIMIT_BAD_PCT) return COLORS.bad
+  if (pct > LIMIT_BAD_PCT) return COLORS.bad
   if (pct >= LIMIT_WARN_PCT) return COLORS.warn
   return COLORS.running
 }
@@ -688,10 +707,10 @@ export function ago(ms, nowMs) {
   const min = Math.max(0, Math.floor((nowMs - ms) / 60000))
   if (min < 1) return 'just now'
   if (min < 60) return min + 'm ago'
+  // Only the largest unit, rounded down: a rough idea is enough (user's request, 2026-10-23)
   const h = Math.floor(min / 60)
-  if (h < 24) return h + 'h' + (min % 60 ? ' ' + (min % 60) + 'm' : '') + ' ago'
-  const d = Math.floor(h / 24)
-  return d + 'd' + (h % 24 ? ' ' + (h % 24) + 'h' : '') + ' ago'
+  if (h < 24) return h + 'h ago'
+  return Math.floor(h / 24) + 'd ago'
 }
 
 // ===== Auto-naming looks at the whole session =====

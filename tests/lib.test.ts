@@ -19,7 +19,7 @@ const S = (statuses: string[]) => statuses.map((s, i) => ({ title: 'S' + i, stat
 test('times use abbreviated English: remaining, how long ago, elapsed, reset', () => {
   expect([etaText(null), etaText(0), etaText(18), etaText(75), etaText(120)]).toEqual(['', 'done', '~18m', '~1h 15m', '~2h'])
   expect([ago(0, 30_000), ago(0, 40 * MIN), ago(0, 125 * MIN), ago(0, 27 * 60 * MIN), ago(0, 24 * 60 * MIN)])
-    .toEqual(['just now', '40m ago', '2h 5m ago', '1d 3h ago', '1d ago'])
+    .toEqual(['just now', '40m ago', '2h ago', '1d ago', '1d ago']) // the largest unit only
   expect([formatElapsed(72_000), formatElapsed(9_400)]).toEqual(['1m 12s', '9s'])
   const now = local(2026, 10, 7, 17, 0) // a Wednesday
   expect(relativeReset(new Date(local(2026, 10, 7, 17, 25)).toISOString(), now)).toBe('resets in 25m')
@@ -32,7 +32,7 @@ test('usage: Session limit first, Weekly limit second; colors go blue → orange
   const now = local(2026, 10, 7, 17, 0)
   const segs = usageSegments([{ kind: 'seven_day', percentUsed: 87, resetsAt: new Date(local(2026, 10, 9, 9, 0)).toISOString() }, { kind: 'five_hour', percentUsed: 64 }, { kind: 'spend_limit', percentUsed: 1 }], now)
   expect(segs.map((s) => [s.label, s.pct, s.reset])).toEqual([['Session limit', 64, ''], ['Weekly limit', 87, 'resets Fri']])
-  expect([limitColor(64), limitColor(87), limitColor(96)]).toEqual(['#0088b0', '#e07a10', '#c8222b'])
+  expect([limitColor(64), limitColor(82), limitColor(85), limitColor(86)]).toEqual(['#0088b0', '#e07a10', '#e07a10', '#c8222b'])
   expect([usageRows(2), usageRows(0)]).toEqual([5, 1])
 })
 
@@ -251,4 +251,5 @@ test('clientRowMode: regions while the first one may still start, for good once 
   expect(clientRowMode({ supported: true, ready: false, firstDrawAt: 1000 }, 13000, grace)).toBe(false) // never started: fall back
   expect(clientRowMode({ supported: true, ready: true, firstDrawAt: 1000 }, 99999, grace)).toBe(true)
   expect(clientRowMode({ supported: false, ready: true, firstDrawAt: null }, 0, grace)).toBe(false)
+  expect(clientRowMode({ supported: true, ready: true, failed: true, firstDrawAt: 1000 }, 2000, grace)).toBe(false) // stopped answering: plain rows
 })

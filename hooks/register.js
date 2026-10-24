@@ -9,7 +9,7 @@ import {
   desktopRecordMatches, currentStepLabel, splitHidden, COLORS, ago,
   actionLabel, pushAction, showActivity, summarizeBackground,
   ROWS, FALLBACK_BUDGET, usageRows, fitSteps, othersRows,
-  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, touchesChecklist, nodeHeight, isProjectSession, projectTag, clientRowMode, sortByUrgency, groupSessions, hoverInfo, svgAlertIcon, conversationDigest,
+  LIGHT, statusOf, rightTime, svgOtherLine, svgSectionDivider, svgSessionGap, timelineItems, cleanTitle, nameUnits, wrapByWidth, touchesChecklist, nodeHeight, isProjectSession, projectTag, clientRowMode, sortByUrgency, groupSessions, hoverInfo, svgAlertIcon, conversationDigest, todosToInput,
 } from './lib.js'
 
 // ===== Tunables (edit here) =====
@@ -27,6 +27,7 @@ const FOCUS_REFRESH_MS = 10 * 1000     // How often to check Desktop's "last foc
 const TITLE_REFRESH_MS = 60 * 1000     // How often to re-read the session name (a rename shows up within 60 s)
 const TRANSCRIPT_MAX_BYTES = 4 * 1024 * 1024 // $.fs.read per-file limit is 4 MiB (official Limits table)
 const PROGRESS_TOOL = 'mcp__session-dashboard__progress'
+const TODO_TOOL = 'TodoWrite'                 // Claude's built-in todo list; its input is { todos: [{ content, status }] }
 const ACTIVITY_PUBLISH_MS = 10 * 1000  // Activity is written to the shared store at most once every 10 s
 const AUTO_OPEN = true                 // Open the pane automatically when a session starts
 const PANE_BUTTON_LABEL = '☰ Sessions' // Label of the open-pane button above the prompt
@@ -207,6 +208,18 @@ async function currentSteps($) {
 // ---------- Shared store ----------
 
 /** Write own summary to the shared store for other sessions' panes. */
+/** Store a full step list for this session (empty clears it) and redraw; makeInput(prev) builds the progress-tool input. */
+async function saveProgress($, makeInput) {
+  const now = await $.clock.now()
+  const prev = await $.store.get(PROGRESS_PREFIX + me.id)
+  const progress = mergeProgress(prev, makeInput(prev), now)
+  if (progress.steps.length === 0) await $.store.delete(PROGRESS_PREFIX + me.id)
+  else await $.store.set(PROGRESS_PREFIX + me.id, progress)
+  await publish($)
+  $.ui.invalidate('ui.render')
+  return progress
+}
+
 async function publish($) {
   if (!me.id) return // After /clear and before the new id is adopted, do not publish, so no ghost data is written under the old id
   const now = await $.clock.now()
@@ -599,7 +612,6 @@ function otherRow($, els, isDesktop, s, now, columns) {
 function clientRow(els, s, now, status, pct, url, hide) {
   const { Box, Client } = els
   rowTargets.set(s.id, { url, name: s.name })
-  const info = hoverInfo(s)
   return Box({ key: 'proj-' + s.id, flexDirection: 'row', columnGap: 1, alignItems: 'flex-start', children: [
     hide,
     // The region takes the room left beside ✕ and never more: sized by its content it pushed the whole pane wider than the window
@@ -611,7 +623,6 @@ function clientRow(els, s, now, status, pct, url, hide) {
       pct,
       barColor: COLORS.running,
       track: COLORS.track,
-      info: info ? t(info.kind === 'stuck' ? 'hoverStuck' : info.kind === 'doing' ? 'hoverDoing' : 'hoverDone', info.text) : null,
       hoverBg: HOVER_BG,
       jumpingLabel: t('jumping'),
     } })] }),
@@ -619,7 +630,7 @@ function clientRow(els, s, now, status, pct, url, hide) {
 }
 
 /** Whether the Client regions work in this pane; module state, reset on each load. */
-const clientProbe = { supported: true, ready: false, firstDrawAt: null }
+const clientProbe = { supported: true, ready: false, failed: false, firstDrawAt: null }
 
 function useClientRows($, now) {
   if (!clientRowMode(clientProbe, now, CLIENT_GRACE_MS)) return false
@@ -786,15 +797,16 @@ export function register(on) {
 
   // Claude reports step progress
   on('tool.call', { tool: PROGRESS_TOOL }, async ($, e) => {
-    const now = await $.clock.now()
-    const prev = await $.store.get(PROGRESS_PREFIX + me.id)
-    const progress = mergeProgress(prev, { task: e.task, steps: e.steps }, now)
-    if (progress.steps.length === 0) await $.store.delete(PROGRESS_PREFIX + me.id)
-    else await $.store.set(PROGRESS_PREFIX + me.id, progress)
-    await publish($)
-    $.ui.invalidate('ui.render')
+    const progress = await saveProgress($, () => ({ task: e.task, steps: e.steps }))
     const stats = stepStats(progress.steps)
     return { result: progress.steps.length === 0 ? t('progressCleared') : t('progressUpdated', stats.done, stats.total) }
+  })
+
+  // The built-in todo list is mirrored into the pane on every update; only the warn/bad marks still come from the progress tool
+  on('tool.call', { tool: TODO_TOOL }, async ($, e, next) => {
+    // Mirroring is best effort: a store failure must never block the todo tool itself
+    if (me.id && Array.isArray(e.todos)) { try { await saveProgress($, (prev) => todosToInput(e.todos, prev?.steps)) } catch {} }
+    return next(e)
   })
 
   // Read the background task list when a turn ends: Claude ends the turn after pushing work to the background, which must not count as idle (official docs: tell "done" apart from "waiting on background work")
@@ -855,6 +867,15 @@ export function register(on) {
     if (e.reason !== 'clear' && e.reason !== 'resume') {
       for (const t of me.timers) t?.cancel?.()
       me.timers = []
+    }
+    return next(e)
+  })
+
+  // A block whose region failed (did not load, stopped answering): the engine would draw its long error line in its place; draw plain rows instead for the rest of this session
+  on('ui.fault', async ($, e, next) => {
+    if (String(e.module ?? '').endsWith('row.js')) {
+      clientProbe.failed = true
+      $.ui.invalidate('ui.render')
     }
     return next(e)
   })

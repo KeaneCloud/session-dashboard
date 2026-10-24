@@ -236,7 +236,7 @@ test('other sessions: ✕ comes first, light colors, only the time on the right,
   expect([row.children[0].props.key, row.children[1].children[0].type, row.children[1].children[0].props.key]).toEqual(['hide-w', 'Client', 'jump-w']) // ✕ first, then the clickable block
   expect([row.children[1].props.minWidth, row.children[1].props.overflow, row.children[1].children[0].props.width]).toEqual([0, 'hidden', '100%']) // the block fills the room left and never widens the pane
   const timeOf = async (id: string) => (await rowProps(ui, id))?.right
-  expect([await timeOf('w'), await timeOf('u'), await timeOf('i')]).toEqual(['75% · ~18m', '5m ago', '2h 5m ago']) // the percentage sits on the first line, right side
+  expect([await timeOf('w'), await timeOf('u'), await timeOf('i')]).toEqual(['75% · ~18m', '5m ago', '2h ago']) // the percentage sits on the first line, right side
   expect(await ui.find({ type: 'Text', text: /Working ·|Idle ·|· background|In progress…|Done · unread|Current:/ })).toBeUndefined()
   for (const id of ['w', 'u', 'i', 'x']) expect(await ui.find({ in: 'jump-' + id, type: 'Text', text: /Working ·|Idle ·|· background|In progress…|Done · unread|Current:/ })).toBeUndefined()
   // The bar: thin line glyphs across the block's width, 75% in blue, the rest as the faint track
@@ -504,6 +504,21 @@ test('progress tool: stores the steps, replies with one sentence, the summary ca
   expect(saved.get('session:me-1')).toMatchObject({ stepLabel: 'B', eta: '~1m' })
 })
 
+test('todo list: every update is mirrored into the pane steps; a warn mark from the progress tool stays until that todo is completed', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  const clock = stubEngine(on, saved)
+  await start($, clock)
+  const todo = (todos: any[]) => $.tool.call({ tool: 'TodoWrite', todos } as any).catch(() => null)
+  await todo([{ content: 'A', status: 'completed' }, { content: 'B', status: 'in_progress' }, { content: 'C', status: 'pending' }])
+  expect((saved.get('progress:me-1') as any).steps.map((s: any) => s.status)).toEqual(['done', 'running', 'todo'])
+  expect(saved.get('session:me-1')).toMatchObject({ stepLabel: 'B' })
+  await $.tool.call({ tool: 'mcp__session-dashboard__progress', steps: [{ title: 'A', status: 'done' }, { title: 'B', status: 'warn', note: 'Pick one' }, { title: 'C', status: 'todo' }] })
+  await todo([{ content: 'A', status: 'completed' }, { content: 'B', status: 'in_progress' }, { content: 'C', status: 'pending' }])
+  expect((saved.get('progress:me-1') as any).steps[1]).toMatchObject({ status: 'warn', note: 'Pick one' })
+  await todo([{ content: 'A', status: 'completed' }, { content: 'B', status: 'completed' }, { content: 'C', status: 'in_progress' }])
+  expect((saved.get('progress:me-1') as any).steps.map((s: any) => s.status)).toEqual(['done', 'done', 'running'])
+})
+
 test('above the prompt: ☰ Sessions keeps content from other mods and opens the pane when pressed', async ($, on) => {
   const saved = new Map<string, unknown>()
   const opens: unknown[] = []
@@ -742,24 +757,18 @@ test('whole row: one hover scope with a background, the name lines and the time 
   expect(runs.length).toBe(4)
 })
 
-test('hover line: hidden until the pointer is on the row; says what needs the user, what is being done, or what was done', async ($, on) => {
+test('hover: the block lights up but grows no extra line, so the rows below never move under the pointer', async ($, on) => {
   const saved = new Map<string, unknown>()
   saved.set('session:x', other({ id: 'x', desktopId: 'local_x-1', stats: { done: 0, total: 2, pct: 0, hasWarn: true, hasBad: false }, alertNote: 'Pick a test period', stepLabel: 'Backtest' }))
-  saved.set('session:w', other({ id: 'w', desktopId: 'local_w-1', isWorking: true, stepLabel: 'Filter rules' }))
-  saved.set('session:d', other({ id: 'd', desktopId: 'local_d-1', finishedAt: NOW - MIN, lastFocusedAt: NOW, lastDoneLabel: 'Ranking page' }))
-  saved.set('session:n', other({ id: 'n', desktopId: 'local_n-1' }))
   const clock = stubEngine(on, saved)
   await start($, clock)
   const ui = await $.ui.mount(pane(40))
-  const lines: Record<string, string> = { x: 'Needs you: Pick a test period', w: 'Doing: Filter rules', d: 'Done: Ranking page' }
-  for (const [id, text] of Object.entries(lines)) {
-    expect(await ui.find({ in: 'jump-' + id, type: 'Text', text })).toBeUndefined() // hidden at rest
-    await ui.pointer({ type: 'enter', x: 2, y: 0, in: 'jump-' + id })
-    expect(await ui.find({ in: 'jump-' + id, type: 'Text', text })).toBeDefined() // shown while the pointer is on the block
-    await ui.pointer({ type: 'leave', x: 2, y: 0, in: 'jump-' + id })
-    expect(await ui.find({ in: 'jump-' + id, type: 'Text', text })).toBeUndefined()
-  }
-  expect((await rowProps(ui, 'n')).info).toBeNull() // nothing to say, no line
+  const lines = async () => ((await ui.drawn({ in: 'jump-x' })) as any).children.length
+  const before = await lines()
+  await ui.pointer({ type: 'enter', x: 2, y: 0, in: 'jump-x' })
+  expect(((await ui.drawn({ in: 'jump-x' })) as any).props.backgroundColor).toBe('#88888833')
+  expect(await lines()).toBe(before)
+  expect(await ui.find({ in: 'jump-x', type: 'Text', text: /Pick a test period/ })).toBeUndefined()
 })
 
 test('order: needs-you first, then finished-unseen, then working, then seen; most recently active first within a level', async ($, on) => {
@@ -961,4 +970,21 @@ test('a block reports once that its region runs, and a ready report never jumps'
   await clock.advance(13000)
   await clock.settle()
   expect(((await ui.find({ key: 'jump-o' })) as any)?.type).toBe('Client') // it reported in, so it stays a region after the grace
+})
+
+test('a block whose region fails is replaced by plain rows (name and time buttons), never the error line', async ($, on) => {
+  const saved = new Map<string, unknown>()
+  // A real failure: a name so long that the block's drawing goes past the engine's size limit once the region is laid out wide
+  saved.set('session:o', other({ id: 'o', name: 'D'.repeat(99000), desktopId: 'local_o-1', finishedAt: NOW - 5 * MIN, stats: { done: 1, total: 2, pct: 50 } }))
+  const runs: any[] = []
+  const clock = stubEngine(on, saved, { runs })
+  await start($, clock)
+  const ui = await $.ui.mount(pane(30))
+  expect(((await ui.find({ key: 'jump-o' })) as any)?.type).toBe('Client')
+  try { await ui.resize({ columns: 5000, rows: 2, in: 'jump-o' }) } catch {}
+  await ui.redraw()
+  expect(((await ui.find({ key: 'jump-o' })) as any)?.type).toBe('Button')
+  expect(((await ui.find({ key: 'jump-o-time' })) as any)?.props.label).toBe('50% · 5m ago')
+  await ui.press({ key: 'jump-o' })
+  expect(runs.length).toBe(1)
 })

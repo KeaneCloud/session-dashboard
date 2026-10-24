@@ -2,7 +2,7 @@
  * One other session's block on Desktop, drawn as a Client region so the whole block (name, bar, time) is one click target with one hover background.
  * A Button only takes a text label and an absolutely placed Box passes the pointer to its parent, so neither can make the drawn bar clickable; a Client region gets every pointer event itself.
  *
- * props: { name, glyph, light, right, pct (number | null), barColor, track, info, hoverBg, jumpingLabel }
+ * props: { name, glyph, light, right, pct (number | null), barColor, track, hoverBg, jumpingLabel }
  */
 export default function SessionRow(p, surface) {
   const { Box, Text } = surface.elements
@@ -38,8 +38,8 @@ export default function SessionRow(p, surface) {
     // A line glyph can be drawn wider than one cell, so the line is kept a little short and cut at its end ('truncate-end'; the desktop app ignores plain 'truncate' and wrapped the rest onto a new line)
     ? Box({ overflow: 'hidden', children: [Text({ wrap: 'truncate-end', children: barParts(p, barCells(surface.columns)).map(([text, color]) => Text({ color, children: [text] })) })] })
     : Text({ children: [' '] })
-  const info = hover && p.info ? Text({ dimColor: true, wrap: 'wrap', children: [p.info] }) : null
-  return Box({ flexDirection: 'column', backgroundColor: hover || jumping ? p.hoverBg : undefined, children: [line1, bar, info].filter(Boolean) })
+  // Nothing is added under the pointer: an extra line made the block taller, the rows below moved, and a click landed on the next session (2026-10-23)
+  return Box({ flexDirection: 'column', backgroundColor: hover || jumping ? p.hoverBg : undefined, children: [line1, bar] })
 }
 
 const JUMP_FEEDBACK_MS = 8000 // How long "switching…" stays; the app usually switches within about 5 s (measured 2026-10-21/22)
